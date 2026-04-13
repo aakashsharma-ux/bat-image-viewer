@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bat-Viewer</title>
+<link rel="icon" type="image/png" href="batman-logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">
+      <img src="batman-logo.png" alt="Batman">
+    </div>
+    <span class="logo-text">Bat-Viewer</span>
+  </div>
+
+  <div class="size-control">
+    <span class="size-label">Image Size</span>
+    <input type="range" class="size-slider" id="sizer" min="1" max="10" value="3" step="1">
+    <span class="size-badge" id="sizeBadge">Medium</span>
+  </div>
+</header>
+
+<!-- INPUT -->
+<div class="input-section">
+  <textarea class="bulk-area" id="bulkArea" placeholder="Paste up to 1,000 image URLs — one per line or comma-separated.
+New load automatically replaces previous images.
+
+https://example.com/image1.jpg
+https://example.com/image2.jpg
+https://example.com/image3.jpg"></textarea>
+
+  <div class="bulk-footer">
+    <span class="bulk-tally" id="bulkTally"><b>0</b> URLs detected</span>
+    <label class="replace-toggle">
+      <input type="checkbox" id="appendMode"> Append to existing
+    </label>
+    <button class="btn btn-ghost" id="bulkClearBtn">Clear Input</button>
+    <button class="btn btn-gold" id="bulkLoadBtn">Load Images</button>
+  </div>
+  <div class="status hide" id="bSt"></div>
+  <div class="progress-wrap" id="progWrap">
+    <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+    <div class="prog-label" id="progLabel"></div>
+  </div>
+</div>
+
+<!-- GALLERY TOOLBAR -->
+<div class="gtoolbar">
+  <div class="gstats"><b id="gCount">0</b> images loaded</div>
+  <button class="btn btn-ghost" id="clearAll">Clear All</button>
+</div>
+
+<!-- GALLERY -->
+<div class="gallery-wrap">
+  <div id="gallery"></div>
+</div>
+
+<button id="btt">&#8593;</button>
+
+<script src="app.js"></script>
+</body>
+</html>
