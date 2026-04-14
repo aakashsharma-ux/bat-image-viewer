@@ -310,6 +310,8 @@
 
     /* ── Double-click: toggle 2.5× anchored at click point ── */
     box.addEventListener('dblclick', function (e) {
+      /* Ignore if this dblclick ended a drag */
+      if (dragMoved) return;
       const rect = box.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
@@ -320,9 +322,9 @@
         const targetS = 2.5;
         const imgPx   = (cx - tx) / s;
         const imgPy   = (cy - ty) / s;
-        let newTx     = cx - imgPx * targetS;
-        let newTy     = cy - imgPy * targetS;
-        const clamped = clampTranslate(targetS, newTx, newTy);
+        const clamped = clampTranslate(targetS,
+          cx - imgPx * targetS,
+          cy - imgPy * targetS);
         s  = targetS;
         tx = clamped.tx;
         ty = clamped.ty;
@@ -330,10 +332,104 @@
       }
     });
 
-    /* Scroll-to-zoom hint (shows on first hover, hides when zoomed) */
+    /* ── DRAG / PAN ──────────────────────────────────────────
+       Only active when s > 1 (zoomed in).
+       Uses box-scoped mousemove/mouseup so the drag stays
+       locked even if the pointer briefly leaves the image.
+       Space key is explicitly ignored — it must never affect zoom.
+    ──────────────────────────────────────────────────────── */
+    let dragging  = false;
+    let dragMoved = false;   // suppresses dblclick after drag
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragTx0    = 0;
+    let dragTy0    = 0;
+
+    /* Update cursor to reflect current state */
+    function updateCursor() {
+      if (s <= 1.02) {
+        box.style.cursor = 'zoom-in';
+      } else if (dragging) {
+        box.style.cursor = 'grabbing';
+      } else {
+        box.style.cursor = 'grab';
+      }
+    }
+
+    box.addEventListener('mousedown', function (e) {
+      /* Only left button; never triggered by space or keyboard */
+      if (e.button !== 0) return;
+      if (s <= 1.02) return;           // not zoomed — nothing to pan
+      e.preventDefault();
+
+      dragging   = true;
+      dragMoved  = false;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      dragTx0    = tx;
+      dragTy0    = ty;
+      clearTimeout(resetTimer);        // freeze auto-reset while dragging
+      updateCursor();
+    });
+
+    /* Use document-level listeners so drag works even if pointer
+       briefly exits the box boundary during a fast swipe */
+    function onMouseMove(e) {
+      if (!dragging) return;
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+
+      /* Mark as a real drag once the pointer moves > 2 px */
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
+
+      const clamped = clampTranslate(s, dragTx0 + dx, dragTy0 + dy);
+      tx = clamped.tx;
+      ty = clamped.ty;
+
+      /* No transition during live drag — instant follow */
+      img.style.transition = 'none';
+      img.style.transform  =
+        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+        ' scale(' + s.toFixed(4) + ')';
+    }
+
+    function onMouseUp(e) {
+      if (!dragging) return;
+      dragging = false;
+      updateCursor();
+
+      /* Restart auto-reset clock if cursor is outside the box */
+      if (!insideBox && s > ZOOM_MIN + 0.02) {
+        resetTimer = setTimeout(resetZoom, 600);
+      }
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup',   onMouseUp);
+
+    /* Clean up document listeners when the card is removed from DOM */
+    box._cleanupDrag = function () {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup',   onMouseUp);
+    };
+
+    /* Update cursor whenever zoom level changes */
+    const _origCommit = commitZoom;
+    function commitZoomWithCursor(animate) {
+      _origCommit(animate);
+      updateCursor();
+    }
+    /* Rebind so all callers get cursor update */
+    box.__commitZoom = commitZoomWithCursor;
+
+    /* Initialise cursor */
+    updateCursor();
+
+    /* Hint overlay */
     const zoomHint = document.createElement('div');
     zoomHint.className = 'zoom-hint';
-    zoomHint.textContent = 'Scroll to zoom  \u2022  Double-click to toggle 2.5\u00d7';
+    zoomHint.textContent =
+      'Scroll \u2022 zoom    Drag \u2022 pan    Dbl-click \u2022 2.5\u00d7';
     box.appendChild(zoomHint);
 
     /* url row */
@@ -379,6 +475,9 @@
     removeBtn.textContent = 'Remove';
 
     removeBtn.addEventListener('click', function () {
+      /* Clean up document-level drag listeners */
+      if (box._cleanupDrag) box._cleanupDrag();
+
       /* Remove from master data & slot array */
       allUrls.splice(i, 1);
       const slot = slots.splice(i, 1)[0];
@@ -424,6 +523,9 @@
     const i = parseInt(slot.dataset.idx, 10);
     if (!activeSet.has(i)) return;
     activeSet.delete(i);
+    /* Clean up any document-level drag listeners before wiping the card */
+    const b = slot.querySelector('.card-img-box');
+    if (b && b._cleanupDrag) b._cleanupDrag();
     /* Null src first to encourage browser to release the decoded bitmap */
     slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
     slot.innerHTML = '';
@@ -538,6 +640,75 @@
 
   bulkClearBtn.addEventListener('click', function () { bulkArea.value = ''; refreshTally(); });
   clearAllBtn.addEventListener('click', clearGallery);
+
+  /* ── KEYBOARD SCROLL (W = up, S = down) ────────────────────
+     Guards:
+       • Skips if focus is on any input / textarea / contenteditable
+         so typing in the URL box is never hijacked.
+       • Skips if a zoomed image box has focus (drag in progress).
+     Acceleration:
+       • Holding the key ramps the scroll speed up to SCROLL_MAX
+         so short taps feel responsive and long holds move fast.
+  ──────────────────────────────────────────────────────────── */
+  const SCROLL_BASE = 80;    // px on first tick
+  const SCROLL_MAX  = 320;   // px at full acceleration
+  const SCROLL_RAMP = 40;    // px added per consecutive tick
+
+  let scrollVelocity = SCROLL_BASE;
+  let scrollRafId    = null;
+  let scrollDir      = 0;    // -1 = up, +1 = down, 0 = idle
+  const heldKeys     = {};   // tracks which keys are currently held
+
+  function isTypingTarget() {
+    const el  = document.activeElement;
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' ||
+           el.isContentEditable ||
+           el.closest('.card-img-box') !== null;  // inside zoom area
+  }
+
+  function scrollTick() {
+    if (scrollDir === 0) return;
+    window.scrollBy({ top: scrollDir * scrollVelocity, behavior: 'instant' });
+    /* Ramp up velocity while key held */
+    scrollVelocity = Math.min(SCROLL_MAX, scrollVelocity + SCROLL_RAMP);
+    scrollRafId = requestAnimationFrame(scrollTick);
+  }
+
+  function startScroll(dir) {
+    if (scrollDir === dir) return;   // already scrolling that way
+    cancelAnimationFrame(scrollRafId);
+    scrollDir      = dir;
+    scrollVelocity = SCROLL_BASE;
+    scrollRafId    = requestAnimationFrame(scrollTick);
+  }
+
+  function stopScroll() {
+    cancelAnimationFrame(scrollRafId);
+    scrollDir      = 0;
+    scrollVelocity = SCROLL_BASE;
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.repeat) return;            // browser auto-repeat — we handle our own
+    if (isTypingTarget()) return;
+    const key = e.key.toLowerCase();
+    if (key !== 'w' && key !== 's') return;
+    e.preventDefault();
+    heldKeys[key] = true;
+    startScroll(key === 's' ? 1 : -1);
+  });
+
+  document.addEventListener('keyup', function (e) {
+    const key = e.key.toLowerCase();
+    delete heldKeys[key];
+    /* Only stop if neither scroll key is still held */
+    if (!heldKeys['w'] && !heldKeys['s']) stopScroll();
+  });
+
+  /* Stop scroll if window loses focus (e.g. alt-tab while key held) */
+  window.addEventListener('blur', stopScroll);
 
   /* ── BACK TO TOP ── */
   window.addEventListener('scroll', function () {

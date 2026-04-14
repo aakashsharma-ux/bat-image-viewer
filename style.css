@@ -538,36 +538,36 @@ header {
   transform: translateY(0);
 }
 
-/* cursor hint while hovering */
-.card-img-box:hover {
-  cursor: zoom-in;
-}
-
-.card-img-box.zoomed {
-  cursor: crosshair;
-}
-
-/* Clip zoomed image to the box boundaries */
+/* cursor is fully controlled by JS (zoom-in / grab / grabbing) */
 .card-img-box {
   overflow: hidden;
+  cursor: zoom-in;   /* default before JS initialises */
 }
 
-/* Scroll hint tooltip shown on first hover */
+/* suppress browser's default drag-image ghost when dragging */
+.card-img {
+  -webkit-user-drag: none;
+  user-drag: none;
+  pointer-events: none;   /* let box receive all mouse events */
+}
+
+/* Scroll hint — visible on hover at 1×, hidden when zoomed */
 .zoom-hint {
   position: absolute;
   bottom: 8px;
   left: 50%;
-  transform: translateX(-50%) translateY(4px);
-  background: rgba(0, 0, 0, 0.75);
-  color: rgba(255, 255, 255, 0.75);
+  transform: translateX(-50%) translateY(6px);
+  background: rgba(0, 0, 0, 0.78);
+  color: rgba(255, 255, 255, 0.80);
   font-size: 10px;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: 4px;
   pointer-events: none;
   white-space: nowrap;
   opacity: 0;
   transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 10;
+  letter-spacing: 0.3px;
 }
 
 .card-img-box:hover .zoom-hint {
@@ -575,6 +575,7 @@ header {
   transform: translateX(-50%) translateY(0);
 }
 
+/* Hide hint once zoomed — drag hint takes over via badge */
 .card-img-box.zoomed .zoom-hint {
   opacity: 0;
 }
