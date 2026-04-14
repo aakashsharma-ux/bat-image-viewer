@@ -181,6 +181,161 @@
     img.src = url;
     box.appendChild(img);
 
+    /* ── ZOOM ──────────────────────────────────────────────
+       Model: transform = translate(tx, ty) scale(s)
+       with transform-origin ALWAYS fixed at "0 0".
+
+       Why this beats changing transform-origin:
+         Changing transform-origin on an already-scaled element
+         shifts the visual position, causing jumps.  Instead we
+         keep the origin at top-left (0 0) and compute the exact
+         tx/ty that keeps the pixel under the cursor stationary.
+
+       Math for cursor-anchored zoom:
+         Before zoom: point P is at screen position (cx, cy).
+         P in image space = ((cx - tx) / s,  (cy - ty) / s)
+         After new scale s2, we want P to stay at (cx, cy):
+           cx = tx2 + P.x * s2
+           tx2 = cx - P.x * s2 = cx - ((cx - tx) / s) * s2
+
+       Coordinates are in box-local pixels (no percentages).
+    ──────────────────────────────────────────────────────── */
+    const ZOOM_MIN  = 1;
+    const ZOOM_MAX  = 5;
+    const ZOOM_FACTOR = 1.15;   // multiply/divide scale per wheel notch
+
+    let s  = 1;     // current scale
+    let tx = 0;     // current translate X (px, box-local)
+    let ty = 0;     // current translate Y (px, box-local)
+    let resetTimer  = null;
+    let insideBox   = false;
+
+    /* Always keep transform-origin at top-left so math stays simple */
+    img.style.transformOrigin = '0 0';
+
+    /* Zoom level badge */
+    const zoomBadge = document.createElement('div');
+    zoomBadge.className = 'zoom-badge';
+    zoomBadge.textContent = '1\u00d7';
+    box.appendChild(zoomBadge);
+
+    /* Clamp translate so the image never leaves the box */
+    function clampTranslate(scale, newTx, newTy) {
+      const bw = box.offsetWidth;
+      const bh = box.offsetHeight;
+      const maxTx = 0;
+      const minTx = bw - bw * scale;
+      const maxTy = 0;
+      const minTy = bh - bh * scale;
+      return {
+        tx: Math.min(maxTx, Math.max(minTx, newTx)),
+        ty: Math.min(maxTy, Math.max(minTy, newTy))
+      };
+    }
+
+    /* Commit s / tx / ty to the DOM */
+    function commitZoom(animate) {
+      img.style.transition = animate
+        ? 'transform 0.32s cubic-bezier(0.25,0.46,0.45,0.94)'
+        : 'none';
+      img.style.transform =
+        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+        ' scale(' + s.toFixed(4) + ')';
+
+      zoomBadge.textContent = s.toFixed(1) + '\u00d7';
+      const zoomed = s > 1.02;
+      zoomBadge.classList.toggle('visible', zoomed);
+      box.classList.toggle('zoomed', zoomed);
+    }
+
+    /* Animate back to identity */
+    function resetZoom() {
+      clearTimeout(resetTimer);
+      s = 1; tx = 0; ty = 0;
+      commitZoom(true);
+    }
+
+    /* ── Wheel: strict boundary check then zoom ── */
+    box.addEventListener('wheel', function (e) {
+      /* Hard boundary: only react when pointer is provably inside the box */
+      const rect = box.getBoundingClientRect();
+      const cx = e.clientX - rect.left;   // cursor X in box-local px
+      const cy = e.clientY - rect.top;    // cursor Y in box-local px
+
+      if (cx < 0 || cy < 0 || cx > rect.width || cy > rect.height) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      /* Determine zoom direction: deltaY>0 = scroll down = zoom out */
+      const dir    = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+      const newS   = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s * dir));
+      if (newS === s) return;
+
+      /* Cursor-anchored translate:
+         We want the box-local point (cx, cy) to map to the same
+         image point before and after the scale change.
+         Image-space point = (cx - tx) / s
+         New translate = cx - imagePoint * newS               */
+      const imgPx = (cx - tx) / s;
+      const imgPy = (cy - ty) / s;
+      let newTx = cx - imgPx * newS;
+      let newTy = cy - imgPy * newS;
+
+      /* Clamp so image fills the box (no empty gaps) */
+      const clamped = clampTranslate(newS, newTx, newTy);
+      s  = newS;
+      tx = clamped.tx;
+      ty = clamped.ty;
+
+      commitZoom(false);
+
+      /* Auto-reset timer when zoomed back to 1× */
+      clearTimeout(resetTimer);
+      if (s <= ZOOM_MIN + 0.02) resetZoom();
+    }, { passive: false });
+
+    /* ── Mouse enter/leave — strict box tracking ── */
+    box.addEventListener('mouseenter', function () {
+      insideBox = true;
+      clearTimeout(resetTimer);
+    });
+
+    box.addEventListener('mouseleave', function () {
+      insideBox = false;
+      if (s > ZOOM_MIN + 0.02) {
+        resetTimer = setTimeout(resetZoom, 600);
+      }
+    });
+
+    /* ── Double-click: toggle 2.5× anchored at click point ── */
+    box.addEventListener('dblclick', function (e) {
+      const rect = box.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+
+      if (s > 1.05) {
+        resetZoom();
+      } else {
+        const targetS = 2.5;
+        const imgPx   = (cx - tx) / s;
+        const imgPy   = (cy - ty) / s;
+        let newTx     = cx - imgPx * targetS;
+        let newTy     = cy - imgPy * targetS;
+        const clamped = clampTranslate(targetS, newTx, newTy);
+        s  = targetS;
+        tx = clamped.tx;
+        ty = clamped.ty;
+        commitZoom(true);
+      }
+    });
+
+    /* Scroll-to-zoom hint (shows on first hover, hides when zoomed) */
+    const zoomHint = document.createElement('div');
+    zoomHint.className = 'zoom-hint';
+    zoomHint.textContent = 'Scroll to zoom  \u2022  Double-click to toggle 2.5\u00d7';
+    box.appendChild(zoomHint);
+
     /* url row */
     const urlRow = document.createElement('div');
     urlRow.className = 'card-url-row';
