@@ -319,6 +319,18 @@ header {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* ── VIRTUAL SLOT (lightweight placeholder) ── */
+.vslot {
+  border-radius: 10px;
+  background: rgba(10, 10, 18, 0.45);
+  border: 1px solid rgba(245, 197, 24, 0.08);
+  min-height: 240px;
+  /* content-visibility lets browser skip layout/paint for off-screen slots */
+  content-visibility: auto;
+  contain-intrinsic-size: 0 240px;
+  transition: border-color 0.2s;
+}
+
 /* ── CARD ── */
 .card {
   background: var(--card);

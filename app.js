@@ -1,6 +1,21 @@
 (function () {
   'use strict';
 
+  /* ════════════════════════════════════════════════════════
+     VIRTUAL GALLERY ENGINE
+     ─────────────────────────────────────────────────────
+     Strategy:
+       1. allUrls[]  = master list (never touches DOM directly)
+       2. slots[]    = one lightweight <div> per URL in the DOM
+                       Each slot occupies the correct grid space
+                       but holds NO image until it becomes visible.
+       3. IntersectionObserver watches every slot.
+          - Entering viewport (+200vh margin) → build & insert real card
+          - Leaving viewport  (+200vh margin) → destroy card, free <img>
+       Result: regardless of how many URLs are loaded, only ~30-80
+       real card DOM nodes exist at any given time.
+  ════════════════════════════════════════════════════════ */
+
   /* ── DOM refs ── */
   const gallery      = document.getElementById('gallery');
   const bulkArea     = document.getElementById('bulkArea');
@@ -18,11 +33,18 @@
   const sizer        = document.getElementById('sizer');
   const sizeBadge    = document.getElementById('sizeBadge');
 
-  let cardIndex = 0;
-  let isLoading = false;
-  let stTimer   = null;
+  /* ── State ── */
+  let allUrls    = [];
+  let slots      = [];
+  let activeSet  = new Set();   // indices with a live card in the DOM
+  let isLoading  = false;
+  let stTimer    = null;
+  let curH       = '240px';
+  let observer   = null;
 
-  /* ── SIZE PRESETS ── */
+  /* ════════════════════════════════════════════════════════
+     SIZE PRESETS
+  ════════════════════════════════════════════════════════ */
   const SIZES = [
     { label: 'Tiny',      cols: 5, h: '140px' },
     { label: 'Small',     cols: 4, h: '180px' },
@@ -38,20 +60,27 @@
 
   function applySize(val) {
     const s = SIZES[val - 1];
+    curH = s.h;
     sizeBadge.textContent = s.label;
     gallery.style.gridTemplateColumns = s.cols === 1
       ? '1fr'
       : 'repeat(' + s.cols + ', minmax(0, 1fr))';
-    document.querySelectorAll('.card-img-box').forEach(b => {
-      b.style.height = s.h;
+    gallery.dataset.imgH = curH;
+
+    /* Update every slot height so the grid layout stays correct */
+    slots.forEach(function (slot) {
+      slot.style.minHeight = curH;
+      const box = slot.querySelector('.card-img-box');
+      if (box) box.style.height = curH;
     });
-    gallery.dataset.imgH = s.h;
   }
 
-  sizer.addEventListener('input', () => applySize(parseInt(sizer.value)));
+  sizer.addEventListener('input', function () { applySize(parseInt(sizer.value)); });
   applySize(parseInt(sizer.value));
 
-  /* ── URL COUNTER ── */
+  /* ════════════════════════════════════════════════════════
+     HELPERS
+  ════════════════════════════════════════════════════════ */
   bulkArea.addEventListener('input', refreshTally);
 
   function refreshTally() {
@@ -59,12 +88,11 @@
     bulkTally.innerHTML = '<b>' + n + '</b> URL' + (n !== 1 ? 's' : '') + ' detected';
   }
 
-  /* ── HELPERS ── */
   function parseUrls(txt) {
     return txt
       .split(/[\n,]+/)
-      .map(s => s.trim())
-      .filter(s => s.length > 6)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 6; })
       .slice(0, 1000);
   }
 
@@ -72,9 +100,7 @@
     try {
       const u = new URL(s);
       return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'data:';
-    } catch {
-      return false;
-    }
+    } catch (e) { return false; }
   }
 
   function showSt(msg, cls, ms) {
@@ -82,47 +108,47 @@
     clearTimeout(stTimer);
     bSt.textContent = msg;
     bSt.className = 'status ' + cls;
-    stTimer = setTimeout(() => { bSt.className = 'status hide'; }, ms);
+    stTimer = setTimeout(function () { bSt.className = 'status hide'; }, ms);
   }
 
-  /* ── COUNT ── */
   function refreshCount() {
-    gCount.textContent = gallery.querySelectorAll('.card').length;
+    gCount.textContent = allUrls.length;
   }
 
-  /* ── CLEAR GALLERY ── */
-  function clearGallery() {
-    gallery.querySelectorAll('.card').forEach(c => c.remove());
-    cardIndex = 0;
-    refreshCount();
+  /* ════════════════════════════════════════════════════════
+     SLOT SYSTEM
+  ════════════════════════════════════════════════════════ */
+
+  /* Lightweight placeholder that reserves grid space */
+  function makeSlot(i) {
+    const slot = document.createElement('div');
+    slot.className = 'vslot';
+    slot.style.minHeight = curH;
+    slot.dataset.idx = String(i);
+    return slot;
   }
 
-  /* ── CREATE CARD ── */
-  function createCard(url) {
-    cardIndex++;
-    const idx  = cardIndex;
-    const curH = gallery.dataset.imgH || '240px';
+  /* Full interactive card — built only when slot enters viewport */
+  function buildCard(i) {
+    const url = allUrls[i];
+    const idx = i + 1;
 
-    /* card wrapper */
     const card = document.createElement('div');
     card.className = 'card';
 
     /* header */
     const hdr  = document.createElement('div');
     hdr.className = 'card-header';
-
     const num  = document.createElement('span');
     num.className = 'card-num';
     num.textContent = 'Image ' + idx;
-
     const dims = document.createElement('span');
     dims.className = 'card-dims';
-
     hdr.appendChild(num);
     hdr.appendChild(dims);
 
     /* image box */
-    const box  = document.createElement('div');
+    const box = document.createElement('div');
     box.className = 'card-img-box';
     box.style.height = curH;
 
@@ -133,36 +159,34 @@
 
     const img = document.createElement('img');
     img.className = 'card-img';
-    img.alt       = 'Image ' + idx;
-    img.decoding  = 'async';
+    img.alt = 'Image ' + idx;
+    img.decoding = 'async';
 
-    /* attach handlers BEFORE setting src to avoid race condition */
     img.addEventListener('load', function () {
       spinWrap.remove();
       if (img.naturalWidth) {
-        dims.textContent = img.naturalWidth + ' x ' + img.naturalHeight;
+        dims.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
       }
     });
 
     img.addEventListener('error', function () {
       spinWrap.remove();
       box.innerHTML =
-        '<div class="card-err">' +
-          '&#9888; Could not load image<br>' +
-          '<small style="opacity:.45;word-break:break-all;display:block;margin-top:4px;">' + url + '</small>' +
-        '</div>';
+        '<div class="card-err">\u26a0 Could not load image' +
+        '<small style="opacity:.45;word-break:break-all;display:block;margin-top:4px;">' +
+        url + '</small></div>';
     });
 
-    img.src = url;   /* src set AFTER handlers are bound */
+    /* src set AFTER handlers are bound to avoid race condition */
+    img.src = url;
     box.appendChild(img);
 
     /* url row */
     const urlRow = document.createElement('div');
     urlRow.className = 'card-url-row';
-
     const urlTxt = document.createElement('span');
     urlTxt.className = 'card-url-text';
-    urlTxt.title     = url;
+    urlTxt.title = url;
     urlTxt.textContent = url;
     urlRow.appendChild(urlTxt);
 
@@ -171,26 +195,19 @@
     toolbar.className = 'card-toolbar';
 
     const copyBtn = document.createElement('button');
-    copyBtn.className   = 'tcopy';
+    copyBtn.className = 'tcopy';
     copyBtn.textContent = 'Copy Link';
     let copyTimer = null;
 
     copyBtn.addEventListener('click', function () {
-      var doCopy;
-      if (navigator.clipboard) {
-        doCopy = navigator.clipboard.writeText(url);
-      } else {
-        doCopy = new Promise(function (res) {
-          var t = document.createElement('textarea');
-          t.value = url;
-          t.style.cssText = 'position:fixed;opacity:0';
-          document.body.appendChild(t);
-          t.select();
-          document.execCommand('copy');
-          t.remove();
-          res();
-        });
-      }
+      const doCopy = navigator.clipboard
+        ? navigator.clipboard.writeText(url)
+        : new Promise(function (res) {
+            const t = document.createElement('textarea');
+            t.value = url; t.style.cssText = 'position:fixed;opacity:0';
+            document.body.appendChild(t); t.select();
+            document.execCommand('copy'); t.remove(); res();
+          });
       doCopy.then(function () {
         copyBtn.textContent = 'Copied!';
         copyBtn.classList.add('ok');
@@ -203,12 +220,28 @@
     });
 
     const removeBtn = document.createElement('button');
-    removeBtn.className   = 'tremove';
+    removeBtn.className = 'tremove';
     removeBtn.textContent = 'Remove';
 
     removeBtn.addEventListener('click', function () {
+      /* Remove from master data & slot array */
+      allUrls.splice(i, 1);
+      const slot = slots.splice(i, 1)[0];
+      activeSet.delete(i);
+
+      /* Re-index remaining slots so their idx stays accurate */
+      for (let j = i; j < slots.length; j++) {
+        slots[j].dataset.idx = String(j);
+        const n = slots[j].querySelector('.card-num');
+        if (n) n.textContent = 'Image ' + (j + 1);
+      }
+
       card.classList.add('out');
-      setTimeout(function () { card.remove(); refreshCount(); }, 240);
+      setTimeout(function () {
+        observer.unobserve(slot);
+        slot.remove();
+        refreshCount();
+      }, 240);
     });
 
     toolbar.appendChild(copyBtn);
@@ -222,58 +255,120 @@
     return card;
   }
 
-  /* ── BULK LOAD ──
-     Default behaviour: REPLACE existing images (auto-clear).
-     "Append to existing" checkbox: accumulate across loads instead.
-  */
+  /* Upgrade slot → real card */
+  function activateSlot(slot) {
+    const i = parseInt(slot.dataset.idx, 10);
+    if (activeSet.has(i) || i >= allUrls.length) return;
+    activeSet.add(i);
+    slot.innerHTML = '';
+    slot.appendChild(buildCard(i));
+  }
+
+  /* Downgrade slot → empty placeholder, freeing the <img> memory */
+  function deactivateSlot(slot) {
+    const i = parseInt(slot.dataset.idx, 10);
+    if (!activeSet.has(i)) return;
+    activeSet.delete(i);
+    /* Null src first to encourage browser to release the decoded bitmap */
+    slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
+    slot.innerHTML = '';
+  }
+
+  /* IntersectionObserver:
+     rootMargin '200% 0px 200% 0px' = start loading 2 viewport-heights
+     before the card enters view, and keep alive 2vp below.
+     This eliminates visible pop-in even at fast scroll speeds. */
+  function buildObserver() {
+    if (observer) observer.disconnect();
+
+    observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          activateSlot(entry.target);
+        } else {
+          deactivateSlot(entry.target);
+        }
+      });
+    }, {
+      root: null,
+      rootMargin: '200% 0px 200% 0px',
+      threshold: 0
+    });
+
+    slots.forEach(function (slot) { observer.observe(slot); });
+  }
+
+  /* ════════════════════════════════════════════════════════
+     CLEAR
+  ════════════════════════════════════════════════════════ */
+  function clearGallery() {
+    if (observer) { observer.disconnect(); observer = null; }
+    gallery.querySelectorAll('img').forEach(function (img) { img.src = ''; });
+    gallery.innerHTML = '';
+    allUrls   = [];
+    slots     = [];
+    activeSet = new Set();
+    refreshCount();
+  }
+
+  /* ════════════════════════════════════════════════════════
+     BULK LOAD
+     Phase 1: Build all slot placeholders in chunks (fast, no images).
+     Phase 2: Hand off to IntersectionObserver → images load on demand.
+  ════════════════════════════════════════════════════════ */
   bulkLoadBtn.addEventListener('click', async function () {
     if (isLoading) return;
 
     const urls = parseUrls(bulkArea.value).filter(isUrl);
-    if (!urls.length) {
-      showSt('No valid URLs found. Check your input.', 'err');
-      return;
-    }
+    if (!urls.length) { showSt('No valid URLs found. Check your input.', 'err'); return; }
 
     isLoading = true;
     bulkLoadBtn.disabled = true;
 
-    /* Auto-clear unless append mode is on */
-    if (!appendMode.checked) {
-      clearGallery();
-    }
+    if (!appendMode.checked) clearGallery();
+
+    const startIdx = allUrls.length;
+    allUrls = allUrls.concat(urls);
 
     progWrap.classList.add('on');
     progFill.style.width = '0%';
-    progLabel.textContent = 'Preparing ' + urls.length + ' image' + (urls.length > 1 ? 's' : '') + '\u2026';
+    progLabel.textContent = 'Building grid for ' + urls.length + ' images\u2026';
 
-    const CHUNK = 40;
-    let done = 0;
+    /* Disconnect observer while we batch-insert slots for performance */
+    if (observer) observer.disconnect();
 
-    for (let i = 0; i < urls.length; i += CHUNK) {
-      const frag = document.createDocumentFragment();
-      urls.slice(i, i + CHUNK).forEach(function (u) {
-        frag.appendChild(createCard(u));
-      });
-      gallery.appendChild(frag);
+    const CHUNK = 200;
+    let frag = document.createDocumentFragment();
 
-      done = Math.min(i + CHUNK, urls.length);
-      progFill.style.width = Math.round((done / urls.length) * 100) + '%';
-      progLabel.textContent = done + ' / ' + urls.length + ' loaded\u2026';
-      refreshCount();
+    for (let i = 0; i < urls.length; i++) {
+      const slot = makeSlot(startIdx + i);
+      slots.push(slot);
+      frag.appendChild(slot);
 
-      /* yield to browser so it can paint + decode images */
-      await new Promise(function (r) {
-        requestAnimationFrame(function () { requestAnimationFrame(r); });
-      });
+      if ((i + 1) % CHUNK === 0 || i === urls.length - 1) {
+        gallery.appendChild(frag);
+        frag = document.createDocumentFragment();
+
+        const pct = Math.round(((i + 1) / urls.length) * 100);
+        progFill.style.width = pct + '%';
+        progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed\u2026';
+        refreshCount();
+
+        await new Promise(function (r) {
+          requestAnimationFrame(function () { requestAnimationFrame(r); });
+        });
+      }
     }
 
+    /* Now observe all slots — visible ones get activated immediately */
+    buildObserver();
+
     refreshCount();
-    progLabel.textContent = urls.length + ' image' + (urls.length > 1 ? 's' : '') + ' ready!';
+    progLabel.textContent = urls.length + ' images queued \u2014 loading visible ones\u2026';
     showSt(
-      urls.length + ' image' + (urls.length > 1 ? 's' : '') + ' loaded into the Batcave.',
-      'ok',
-      3500
+      urls.length + ' image' + (urls.length > 1 ? 's' : '') +
+      ' ready. Scroll to load more.',
+      'ok', 4000
     );
     setTimeout(function () {
       progWrap.classList.remove('on');
@@ -286,13 +381,7 @@
     bulkLoadBtn.disabled = false;
   });
 
-  /* Clear input textarea */
-  bulkClearBtn.addEventListener('click', function () {
-    bulkArea.value = '';
-    refreshTally();
-  });
-
-  /* Manual clear all cards */
+  bulkClearBtn.addEventListener('click', function () { bulkArea.value = ''; refreshTally(); });
   clearAllBtn.addEventListener('click', clearGallery);
 
   /* ── BACK TO TOP ── */
@@ -304,7 +393,6 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  /* init */
   refreshCount();
   refreshTally();
 
