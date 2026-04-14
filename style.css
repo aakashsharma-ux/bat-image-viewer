@@ -412,7 +412,7 @@ header {
   transition: transform 0.3s ease;
 }
 
-/* zoom JS owns transform — no CSS hover scale here */
+.card:hover .card-img { transform: scale(1.015); }
 
 .card-spinner {
   position: absolute;
@@ -511,79 +511,7 @@ header {
 
 .tremove:hover { background: rgba(231, 76, 60, 0.20); }
 
-/* ── ZOOM BADGE ── */
-.zoom-badge {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.72);
-  color: var(--gold);
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 5px;
-  border: 1px solid rgba(245, 197, 24, 0.3);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
-  z-index: 10;
-  letter-spacing: 0.5px;
-}
-
-.zoom-badge.visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* cursor hint while hovering */
-.card-img-box:hover {
-  cursor: zoom-in;
-}
-
-.card-img-box.zoomed {
-  cursor: crosshair;
-}
-
-/* Clip zoomed image to the box boundaries */
-.card-img-box {
-  overflow: hidden;
-}
-
-/* Scroll hint tooltip shown on first hover */
-.zoom-hint {
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%) translateY(4px);
-  background: rgba(0, 0, 0, 0.75);
-  color: rgba(255, 255, 255, 0.75);
-  font-size: 10px;
-  padding: 3px 10px;
-  border-radius: 4px;
-  pointer-events: none;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-  z-index: 10;
-}
-
-.card-img-box:hover .zoom-hint {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
-.card-img-box.zoomed .zoom-hint {
-  opacity: 0;
-}
-
-/* Smooth image scaling — use high-quality rendering */
-.card-img {
-  image-rendering: auto;
-  will-change: transform;
-}
-
-
+/* ── BACK TO TOP ── */
 #btt {
   position: fixed;
   bottom: 26px;
