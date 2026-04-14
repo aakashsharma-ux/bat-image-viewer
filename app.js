@@ -233,6 +233,13 @@
       };
     }
 
+    /* Expose zoom state + clamp to the global space-pan handler.
+       We use a plain object so mutations (tx=, ty=) are reflected
+       in commitZoom which reads s/tx/ty from the same closure. */
+    box._zoomState = { get s() { return s; }, get tx() { return tx; }, get ty() { return ty; },
+                       set s(v) { s = v; },   set tx(v) { tx = v; },   set ty(v) { ty = v; } };
+    box._clamp     = clampTranslate;
+
     /* Commit s / tx / ty to the DOM */
     function commitZoom(animate) {
       img.style.transition = animate
@@ -345,16 +352,19 @@
     let dragTx0    = 0;
     let dragTy0    = 0;
 
-    /* Update cursor to reflect current state */
+    /* Update cursor — space-pan system may override this externally */
     function updateCursor() {
       if (s <= 1.02) {
         box.style.cursor = 'zoom-in';
-      } else if (dragging) {
+      } else if (dragging || spaceDragging) {
         box.style.cursor = 'grabbing';
+      } else if (spaceHeld && hoveredBox === box) {
+        box.style.cursor = 'grab';
       } else {
         box.style.cursor = 'grab';
       }
     }
+    box._updateCursor = updateCursor;
 
     box.addEventListener('mousedown', function (e) {
       /* Only left button; never triggered by space or keyboard */
@@ -641,57 +651,117 @@
   bulkClearBtn.addEventListener('click', function () { bulkArea.value = ''; refreshTally(); });
   clearAllBtn.addEventListener('click', clearGallery);
 
-  /* ── KEYBOARD SCROLL (W = up, S = down) ────────────────────
-     Guards:
-       • Skips if focus is on any input / textarea / contenteditable
-         so typing in the URL box is never hijacked.
-       • Skips if a zoomed image box has focus (drag in progress).
-     Acceleration:
-       • Holding the key ramps the scroll speed up to SCROLL_MAX
-         so short taps feel responsive and long holds move fast.
-  ──────────────────────────────────────────────────────────── */
-  const SCROLL_BASE = 80;    // px on first tick
-  const SCROLL_MAX  = 320;   // px at full acceleration
-  const SCROLL_RAMP = 40;    // px added per consecutive tick
+  /* ════════════════════════════════════════════════════════
+     KEYBOARD SCROLL  (W = up, S = down)
+     SPACE PAN MODE   (hold Space + drag = pan any zoomed image)
+     ─────────────────────────────────────────────────────
+     Space key:
+       • NEVER scrolls the page (always e.preventDefault())
+       • While held, activates "pan mode" on whatever zoomed
+         image the cursor is currently over.
+       • Cursor changes to "grab" on the hovered box, "grabbing"
+         while dragging.
+       • Releasing Space cancels pan mode and restores cursor.
 
-  let scrollVelocity = SCROLL_BASE;
+     W / S scroll:
+       • Uses requestAnimationFrame loop for smooth motion.
+       • Speed is driven by the Scroll Speed slider (1-3):
+           1 = Slow  (base 40 px, max 120 px/frame)
+           2 = Med   (base 80 px, max 240 px/frame)
+           3 = Fast  (base 140 px, max 420 px/frame)
+       • Acceleration ramps from base → max while key held.
+       • Instant stop on key-up; window blur also stops scroll.
+
+     Guards (both features):
+       • Ignored when focus is in INPUT / TEXTAREA / contenteditable.
+  ════════════════════════════════════════════════════════ */
+
+  /* ── Scroll speed presets driven by #scrollSpeed slider ── */
+  const scrollSpeedEl = document.getElementById('scrollSpeed');
+  const scrollBadgeEl = document.getElementById('scrollBadge');
+
+  const SPEED_PRESETS = [
+    { label: 'Slow',   base: 40,  max: 120,  ramp: 20 },
+    { label: 'Medium', base: 80,  max: 240,  ramp: 35 },
+    { label: 'Fast',   base: 140, max: 420,  ramp: 60 },
+  ];
+
+  function getSpeedPreset() {
+    return SPEED_PRESETS[parseInt(scrollSpeedEl.value, 10) - 1];
+  }
+
+  scrollSpeedEl.addEventListener('input', function () {
+    scrollBadgeEl.textContent = getSpeedPreset().label;
+  });
+  scrollBadgeEl.textContent = getSpeedPreset().label;
+
+  let scrollVelocity = 0;
   let scrollRafId    = null;
-  let scrollDir      = 0;    // -1 = up, +1 = down, 0 = idle
-  const heldKeys     = {};   // tracks which keys are currently held
+  let scrollDir      = 0;
+  const heldKeys     = {};
 
   function isTypingTarget() {
-    const el  = document.activeElement;
+    const el = document.activeElement;
     if (!el) return false;
     const tag = el.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' ||
-           el.isContentEditable ||
-           el.closest('.card-img-box') !== null;  // inside zoom area
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
   }
 
   function scrollTick() {
     if (scrollDir === 0) return;
+    const preset = getSpeedPreset();
+    scrollVelocity = Math.min(preset.max, scrollVelocity + preset.ramp);
     window.scrollBy({ top: scrollDir * scrollVelocity, behavior: 'instant' });
-    /* Ramp up velocity while key held */
-    scrollVelocity = Math.min(SCROLL_MAX, scrollVelocity + SCROLL_RAMP);
     scrollRafId = requestAnimationFrame(scrollTick);
   }
 
   function startScroll(dir) {
-    if (scrollDir === dir) return;   // already scrolling that way
+    if (scrollDir === dir) return;
     cancelAnimationFrame(scrollRafId);
     scrollDir      = dir;
-    scrollVelocity = SCROLL_BASE;
+    scrollVelocity = getSpeedPreset().base;
     scrollRafId    = requestAnimationFrame(scrollTick);
   }
 
   function stopScroll() {
     cancelAnimationFrame(scrollRafId);
     scrollDir      = 0;
-    scrollVelocity = SCROLL_BASE;
+    scrollVelocity = 0;
   }
 
+  /* ── SPACE PAN MODE ── */
+  let spaceHeld      = false;    // is Space currently down?
+  let spacePanBox    = null;     // which box is being panned
+  let spaceDragging  = false;
+  let spaceStartX    = 0;
+  let spaceStartY    = 0;
+  let spaceTx0       = 0;
+  let spaceTy0       = 0;
+  /* track which box the cursor is hovering — updated via mouseover */
+  let hoveredBox     = null;
+
+  document.addEventListener('mouseover', function (e) {
+    const box = e.target.closest('.card-img-box');
+    hoveredBox = box || null;
+  });
+
+  /* Space keydown: activate pan mode on the hovered box (if zoomed) */
   document.addEventListener('keydown', function (e) {
-    if (e.repeat) return;            // browser auto-repeat — we handle our own
+    /* ── SPACE ── */
+    if (e.code === 'Space') {
+      e.preventDefault();          // NEVER let space scroll the page
+      if (spaceHeld) return;       // already down
+      spaceHeld = true;
+      /* Activate grab cursor on whatever zoomed box cursor is over */
+      if (hoveredBox && hoveredBox._zoomState && hoveredBox._zoomState.s > 1.02) {
+        hoveredBox.style.cursor = 'grab';
+        spacePanBox = hoveredBox;
+      }
+      return;
+    }
+
+    /* ── W / S ── */
+    if (e.repeat) return;
     if (isTypingTarget()) return;
     const key = e.key.toLowerCase();
     if (key !== 'w' && key !== 's') return;
@@ -701,14 +771,81 @@
   });
 
   document.addEventListener('keyup', function (e) {
+    if (e.code === 'Space') {
+      spaceHeld = false;
+      /* Release pan mode */
+      if (spacePanBox) {
+        /* Restore cursor based on zoom state */
+        if (spacePanBox._zoomState) {
+          spacePanBox.style.cursor =
+            spacePanBox._zoomState.s > 1.02 ? 'grab' : 'zoom-in';
+        }
+        spacePanBox = null;
+      }
+      spaceDragging = false;
+      return;
+    }
     const key = e.key.toLowerCase();
     delete heldKeys[key];
-    /* Only stop if neither scroll key is still held */
     if (!heldKeys['w'] && !heldKeys['s']) stopScroll();
   });
 
-  /* Stop scroll if window loses focus (e.g. alt-tab while key held) */
-  window.addEventListener('blur', stopScroll);
+  /* Space + mousedown on a zoomed box starts space-pan drag */
+  document.addEventListener('mousedown', function (e) {
+    if (!spaceHeld || e.button !== 0) return;
+    if (!spacePanBox || !spacePanBox._zoomState) return;
+    const zs = spacePanBox._zoomState;
+    if (zs.s <= 1.02) return;        // not zoomed — nothing to pan
+
+    e.preventDefault();
+    spaceDragging  = true;
+    spaceStartX    = e.clientX;
+    spaceStartY    = e.clientY;
+    spaceTx0       = zs.tx;
+    spaceTy0       = zs.ty;
+    spacePanBox.style.cursor = 'grabbing';
+  }, true);    /* capture so it fires before card's own mousedown */
+
+  document.addEventListener('mousemove', function (e) {
+    if (!spaceDragging || !spacePanBox || !spacePanBox._zoomState) return;
+    const zs  = spacePanBox._zoomState;
+    const dx  = e.clientX - spaceStartX;
+    const dy  = e.clientY - spaceStartY;
+
+    /* Re-use the same clampTranslate logic — stored on the box */
+    const clamped = spacePanBox._clamp(zs.s, spaceTx0 + dx, spaceTy0 + dy);
+    zs.tx = clamped.tx;
+    zs.ty = clamped.ty;
+
+    const img = spacePanBox.querySelector('.card-img');
+    if (img) {
+      img.style.transition = 'none';
+      img.style.transform  =
+        'translate(' + zs.tx.toFixed(2) + 'px,' + zs.ty.toFixed(2) + 'px)' +
+        ' scale(' + zs.s.toFixed(4) + ')';
+    }
+  });
+
+  document.addEventListener('mouseup', function (e) {
+    if (!spaceDragging) return;
+    spaceDragging = false;
+    if (spacePanBox && spaceHeld) {
+      spacePanBox.style.cursor = 'grab';
+    }
+  });
+
+  window.addEventListener('blur', function () {
+    stopScroll();
+    spaceHeld     = false;
+    spaceDragging = false;
+    if (spacePanBox) {
+      if (spacePanBox._zoomState) {
+        spacePanBox.style.cursor =
+          spacePanBox._zoomState.s > 1.02 ? 'grab' : 'zoom-in';
+      }
+      spacePanBox = null;
+    }
+  });
 
   /* ── BACK TO TOP ── */
   window.addEventListener('scroll', function () {
