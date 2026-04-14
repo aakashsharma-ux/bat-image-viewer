@@ -1,51 +1,48 @@
+/* ================================================================
+   BAT-VIEWER  —  app.js  (clean rewrite)
+   ================================================================
+   Sections:
+     1.  DOM refs & global state
+     2.  Size presets (image grid)
+     3.  Scroll speed control  ← W/S keyboard scroll
+     4.  Zoom toggle (enable/disable)
+     5.  URL helpers
+     6.  Virtual gallery engine (IntersectionObserver)
+     7.  Card factory  — zoom · drag · space-pan per card
+     8.  Keyboard handling  — W/S scroll · Space pan
+     9.  Bulk load
+    10.  Back-to-top
+   ================================================================ */
+
 (function () {
   'use strict';
 
-  /* ════════════════════════════════════════════════════════
-     VIRTUAL GALLERY ENGINE
-     ─────────────────────────────────────────────────────
-     Strategy:
-       1. allUrls[]  = master list (never touches DOM directly)
-       2. slots[]    = one lightweight <div> per URL in the DOM
-                       Each slot occupies the correct grid space
-                       but holds NO image until it becomes visible.
-       3. IntersectionObserver watches every slot.
-          - Entering viewport (+200vh margin) → build & insert real card
-          - Leaving viewport  (+200vh margin) → destroy card, free <img>
-       Result: regardless of how many URLs are loaded, only ~30-80
-       real card DOM nodes exist at any given time.
-  ════════════════════════════════════════════════════════ */
+  /* ──────────────────────────────────────────────────────────
+     1. DOM REFS
+  ────────────────────────────────────────────────────────── */
+  const gallery       = document.getElementById('gallery');
+  const bulkArea      = document.getElementById('bulkArea');
+  const bulkTally     = document.getElementById('bulkTally');
+  const bulkLoadBtn   = document.getElementById('bulkLoadBtn');
+  const bulkClearBtn  = document.getElementById('bulkClearBtn');
+  const appendMode    = document.getElementById('appendMode');
+  const bSt           = document.getElementById('bSt');
+  const progWrap      = document.getElementById('progWrap');
+  const progFill      = document.getElementById('progFill');
+  const progLabel     = document.getElementById('progLabel');
+  const gCount        = document.getElementById('gCount');
+  const clearAllBtn   = document.getElementById('clearAll');
+  const btt           = document.getElementById('btt');
+  const sizerEl       = document.getElementById('sizer');
+  const sizeBadgeEl   = document.getElementById('sizeBadge');
+  const scrollSpeedEl = document.getElementById('scrollSpeed');
+  const scrollBadgeEl = document.getElementById('scrollBadge');
+  const zoomEnabledEl = document.getElementById('zoomEnabled');
 
-  /* ── DOM refs ── */
-  const gallery      = document.getElementById('gallery');
-  const bulkArea     = document.getElementById('bulkArea');
-  const bulkTally    = document.getElementById('bulkTally');
-  const bulkLoadBtn  = document.getElementById('bulkLoadBtn');
-  const bulkClearBtn = document.getElementById('bulkClearBtn');
-  const appendMode   = document.getElementById('appendMode');
-  const bSt          = document.getElementById('bSt');
-  const progWrap     = document.getElementById('progWrap');
-  const progFill     = document.getElementById('progFill');
-  const progLabel    = document.getElementById('progLabel');
-  const gCount       = document.getElementById('gCount');
-  const clearAllBtn  = document.getElementById('clearAll');
-  const btt          = document.getElementById('btt');
-  const sizer        = document.getElementById('sizer');
-  const sizeBadge    = document.getElementById('sizeBadge');
-
-  /* ── State ── */
-  let allUrls    = [];
-  let slots      = [];
-  let activeSet  = new Set();   // indices with a live card in the DOM
-  let isLoading  = false;
-  let stTimer    = null;
-  let curH       = '240px';
-  let observer   = null;
-
-  /* ════════════════════════════════════════════════════════
-     SIZE PRESETS
-  ════════════════════════════════════════════════════════ */
-  const SIZES = [
+  /* ──────────────────────────────────────────────────────────
+     2. IMAGE SIZE PRESETS
+  ────────────────────────────────────────────────────────── */
+  const SIZE_PRESETS = [
     { label: 'Tiny',      cols: 5, h: '140px' },
     { label: 'Small',     cols: 4, h: '180px' },
     { label: 'Medium',    cols: 3, h: '240px' },
@@ -58,39 +55,58 @@
     { label: 'Max',       cols: 1, h: '96vh'  },
   ];
 
+  let currentImgH = SIZE_PRESETS[2].h;
+
   function applySize(val) {
-    const s = SIZES[val - 1];
-    curH = s.h;
-    sizeBadge.textContent = s.label;
-    gallery.style.gridTemplateColumns = s.cols === 1
-      ? '1fr'
-      : 'repeat(' + s.cols + ', minmax(0, 1fr))';
-    gallery.dataset.imgH = curH;
-
-    /* Update every slot height so the grid layout stays correct */
-    slots.forEach(function (slot) {
-      slot.style.minHeight = curH;
-      const box = slot.querySelector('.card-img-box');
-      if (box) box.style.height = curH;
-    });
+    const p = SIZE_PRESETS[val - 1];
+    currentImgH = p.h;
+    sizeBadgeEl.textContent = p.label;
+    gallery.style.gridTemplateColumns =
+      p.cols === 1 ? '1fr' : 'repeat(' + p.cols + ',minmax(0,1fr))';
+    document.querySelectorAll('.card-img-box')
+      .forEach(function (b) { b.style.height = p.h; });
   }
 
-  sizer.addEventListener('input', function () { applySize(parseInt(sizer.value)); });
-  applySize(parseInt(sizer.value));
+  sizerEl.addEventListener('input', function () {
+    applySize(parseInt(sizerEl.value, 10));
+  });
+  applySize(parseInt(sizerEl.value, 10));
 
-  /* ════════════════════════════════════════════════════════
-     HELPERS
-  ════════════════════════════════════════════════════════ */
-  bulkArea.addEventListener('input', refreshTally);
+  /* ──────────────────────────────────────────────────────────
+     3. SCROLL SPEED CONTROL
+     Three presets; the rAF scroll loop reads these live so
+     changing the slider mid-scroll takes effect immediately.
+  ────────────────────────────────────────────────────────── */
+  const SCROLL_PRESETS = [
+    { label: 'Slow',   base: 40,  max: 120, ramp: 15 },
+    { label: 'Medium', base: 80,  max: 240, ramp: 30 },
+    { label: 'Fast',   base: 150, max: 450, ramp: 55 },
+  ];
 
-  function refreshTally() {
-    const n = parseUrls(bulkArea.value).length;
-    bulkTally.innerHTML = '<b>' + n + '</b> URL' + (n !== 1 ? 's' : '') + ' detected';
+  function getScrollPreset() {
+    return SCROLL_PRESETS[Math.min(2, Math.max(0,
+      parseInt(scrollSpeedEl.value, 10) - 1))];
   }
 
+  function syncScrollBadge() {
+    scrollBadgeEl.textContent = getScrollPreset().label;
+  }
+
+  scrollSpeedEl.addEventListener('input', syncScrollBadge);
+  syncScrollBadge();
+
+  /* ──────────────────────────────────────────────────────────
+     4. ZOOM TOGGLE
+  ────────────────────────────────────────────────────────── */
+  function zoomAllowed() {
+    return zoomEnabledEl.checked;
+  }
+
+  /* ──────────────────────────────────────────────────────────
+     5. URL HELPERS
+  ────────────────────────────────────────────────────────── */
   function parseUrls(txt) {
-    return txt
-      .split(/[\n,]+/)
+    return txt.split(/[\n,]+/)
       .map(function (s) { return s.trim(); })
       .filter(function (s) { return s.length > 6; })
       .slice(0, 1000);
@@ -98,476 +114,85 @@
 
   function isUrl(s) {
     try {
-      const u = new URL(s);
+      var u = new URL(s);
       return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'data:';
     } catch (e) { return false; }
   }
 
+  function isTypingTarget() {
+    var el = document.activeElement;
+    if (!el) return false;
+    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
+  }
+
+  /* status bar */
+  var stTimer = null;
   function showSt(msg, cls, ms) {
-    ms = ms || 3000;
     clearTimeout(stTimer);
     bSt.textContent = msg;
-    bSt.className = 'status ' + cls;
-    stTimer = setTimeout(function () { bSt.className = 'status hide'; }, ms);
+    bSt.className = 'status ' + (cls || 'ok');
+    stTimer = setTimeout(function () { bSt.className = 'status hide'; }, ms || 3000);
   }
 
   function refreshCount() {
     gCount.textContent = allUrls.length;
   }
 
-  /* ════════════════════════════════════════════════════════
-     SLOT SYSTEM
-  ════════════════════════════════════════════════════════ */
+  bulkArea.addEventListener('input', function () {
+    var n = parseUrls(bulkArea.value).length;
+    bulkTally.innerHTML = '<b>' + n + '</b> URL' + (n !== 1 ? 's' : '') + ' detected';
+  });
 
-  /* Lightweight placeholder that reserves grid space */
+  /* ──────────────────────────────────────────────────────────
+     6. VIRTUAL GALLERY ENGINE
+     Each URL gets one lightweight <div class="vslot">.
+     IntersectionObserver upgrades visible slots to full cards
+     and downgrades off-screen cards back to empty slots —
+     keeping live DOM nodes to ~30-80 regardless of list size.
+  ────────────────────────────────────────────────────────── */
+  var allUrls   = [];
+  var slots     = [];
+  var activeSet = new Set();
+  var observer  = null;
+  var isLoading = false;
+
   function makeSlot(i) {
-    const slot = document.createElement('div');
+    var slot = document.createElement('div');
     slot.className = 'vslot';
-    slot.style.minHeight = curH;
+    slot.style.minHeight = currentImgH;
     slot.dataset.idx = String(i);
     return slot;
   }
 
-  /* Full interactive card — built only when slot enters viewport */
-  function buildCard(i) {
-    const url = allUrls[i];
-    const idx = i + 1;
-
-    const card = document.createElement('div');
-    card.className = 'card';
-
-    /* header */
-    const hdr  = document.createElement('div');
-    hdr.className = 'card-header';
-    const num  = document.createElement('span');
-    num.className = 'card-num';
-    num.textContent = 'Image ' + idx;
-    const dims = document.createElement('span');
-    dims.className = 'card-dims';
-    hdr.appendChild(num);
-    hdr.appendChild(dims);
-
-    /* image box */
-    const box = document.createElement('div');
-    box.className = 'card-img-box';
-    box.style.height = curH;
-
-    const spinWrap = document.createElement('div');
-    spinWrap.className = 'card-spinner';
-    spinWrap.innerHTML = '<div class="spinner"></div>';
-    box.appendChild(spinWrap);
-
-    const img = document.createElement('img');
-    img.className = 'card-img';
-    img.alt = 'Image ' + idx;
-    img.decoding = 'async';
-
-    img.addEventListener('load', function () {
-      spinWrap.remove();
-      if (img.naturalWidth) {
-        dims.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
-      }
-    });
-
-    img.addEventListener('error', function () {
-      spinWrap.remove();
-      box.innerHTML =
-        '<div class="card-err">\u26a0 Could not load image' +
-        '<small style="opacity:.45;word-break:break-all;display:block;margin-top:4px;">' +
-        url + '</small></div>';
-    });
-
-    /* src set AFTER handlers are bound to avoid race condition */
-    img.src = url;
-    box.appendChild(img);
-
-    /* ── ZOOM ──────────────────────────────────────────────
-       Model: transform = translate(tx, ty) scale(s)
-       with transform-origin ALWAYS fixed at "0 0".
-
-       Why this beats changing transform-origin:
-         Changing transform-origin on an already-scaled element
-         shifts the visual position, causing jumps.  Instead we
-         keep the origin at top-left (0 0) and compute the exact
-         tx/ty that keeps the pixel under the cursor stationary.
-
-       Math for cursor-anchored zoom:
-         Before zoom: point P is at screen position (cx, cy).
-         P in image space = ((cx - tx) / s,  (cy - ty) / s)
-         After new scale s2, we want P to stay at (cx, cy):
-           cx = tx2 + P.x * s2
-           tx2 = cx - P.x * s2 = cx - ((cx - tx) / s) * s2
-
-       Coordinates are in box-local pixels (no percentages).
-    ──────────────────────────────────────────────────────── */
-    const ZOOM_MIN  = 1;
-    const ZOOM_MAX  = 5;
-    const ZOOM_FACTOR = 1.15;   // multiply/divide scale per wheel notch
-
-    let s  = 1;     // current scale
-    let tx = 0;     // current translate X (px, box-local)
-    let ty = 0;     // current translate Y (px, box-local)
-    let resetTimer  = null;
-    let insideBox   = false;
-
-    /* Always keep transform-origin at top-left so math stays simple */
-    img.style.transformOrigin = '0 0';
-
-    /* Zoom level badge */
-    const zoomBadge = document.createElement('div');
-    zoomBadge.className = 'zoom-badge';
-    zoomBadge.textContent = '1\u00d7';
-    box.appendChild(zoomBadge);
-
-    /* Clamp translate so the image never leaves the box */
-    function clampTranslate(scale, newTx, newTy) {
-      const bw = box.offsetWidth;
-      const bh = box.offsetHeight;
-      const maxTx = 0;
-      const minTx = bw - bw * scale;
-      const maxTy = 0;
-      const minTy = bh - bh * scale;
-      return {
-        tx: Math.min(maxTx, Math.max(minTx, newTx)),
-        ty: Math.min(maxTy, Math.max(minTy, newTy))
-      };
-    }
-
-    /* Expose zoom state + clamp to the global space-pan handler.
-       We use a plain object so mutations (tx=, ty=) are reflected
-       in commitZoom which reads s/tx/ty from the same closure. */
-    box._zoomState = { get s() { return s; }, get tx() { return tx; }, get ty() { return ty; },
-                       set s(v) { s = v; },   set tx(v) { tx = v; },   set ty(v) { ty = v; } };
-    box._clamp     = clampTranslate;
-
-    /* Commit s / tx / ty to the DOM */
-    function commitZoom(animate) {
-      img.style.transition = animate
-        ? 'transform 0.32s cubic-bezier(0.25,0.46,0.45,0.94)'
-        : 'none';
-      img.style.transform =
-        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-        ' scale(' + s.toFixed(4) + ')';
-
-      zoomBadge.textContent = s.toFixed(1) + '\u00d7';
-      const zoomed = s > 1.02;
-      zoomBadge.classList.toggle('visible', zoomed);
-      box.classList.toggle('zoomed', zoomed);
-    }
-
-    /* Animate back to identity */
-    function resetZoom() {
-      clearTimeout(resetTimer);
-      s = 1; tx = 0; ty = 0;
-      commitZoom(true);
-    }
-
-    /* ── Wheel: strict boundary check then zoom ── */
-    box.addEventListener('wheel', function (e) {
-      /* Hard boundary: only react when pointer is provably inside the box */
-      const rect = box.getBoundingClientRect();
-      const cx = e.clientX - rect.left;   // cursor X in box-local px
-      const cy = e.clientY - rect.top;    // cursor Y in box-local px
-
-      if (cx < 0 || cy < 0 || cx > rect.width || cy > rect.height) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-
-      /* Determine zoom direction: deltaY>0 = scroll down = zoom out */
-      const dir    = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
-      const newS   = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s * dir));
-      if (newS === s) return;
-
-      /* Cursor-anchored translate:
-         We want the box-local point (cx, cy) to map to the same
-         image point before and after the scale change.
-         Image-space point = (cx - tx) / s
-         New translate = cx - imagePoint * newS               */
-      const imgPx = (cx - tx) / s;
-      const imgPy = (cy - ty) / s;
-      let newTx = cx - imgPx * newS;
-      let newTy = cy - imgPy * newS;
-
-      /* Clamp so image fills the box (no empty gaps) */
-      const clamped = clampTranslate(newS, newTx, newTy);
-      s  = newS;
-      tx = clamped.tx;
-      ty = clamped.ty;
-
-      commitZoom(false);
-
-      /* Auto-reset timer when zoomed back to 1× */
-      clearTimeout(resetTimer);
-      if (s <= ZOOM_MIN + 0.02) resetZoom();
-    }, { passive: false });
-
-    /* ── Mouse enter/leave — strict box tracking ── */
-    box.addEventListener('mouseenter', function () {
-      insideBox = true;
-      clearTimeout(resetTimer);
-    });
-
-    box.addEventListener('mouseleave', function () {
-      insideBox = false;
-      if (s > ZOOM_MIN + 0.02) {
-        resetTimer = setTimeout(resetZoom, 600);
-      }
-    });
-
-    /* ── Double-click: toggle 2.5× anchored at click point ── */
-    box.addEventListener('dblclick', function (e) {
-      /* Ignore if this dblclick ended a drag */
-      if (dragMoved) return;
-      const rect = box.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-
-      if (s > 1.05) {
-        resetZoom();
-      } else {
-        const targetS = 2.5;
-        const imgPx   = (cx - tx) / s;
-        const imgPy   = (cy - ty) / s;
-        const clamped = clampTranslate(targetS,
-          cx - imgPx * targetS,
-          cy - imgPy * targetS);
-        s  = targetS;
-        tx = clamped.tx;
-        ty = clamped.ty;
-        commitZoom(true);
-      }
-    });
-
-    /* ── DRAG / PAN ──────────────────────────────────────────
-       Only active when s > 1 (zoomed in).
-       Uses box-scoped mousemove/mouseup so the drag stays
-       locked even if the pointer briefly leaves the image.
-       Space key is explicitly ignored — it must never affect zoom.
-    ──────────────────────────────────────────────────────── */
-    let dragging  = false;
-    let dragMoved = false;   // suppresses dblclick after drag
-    let dragStartX = 0;
-    let dragStartY = 0;
-    let dragTx0    = 0;
-    let dragTy0    = 0;
-
-    /* Update cursor — space-pan system may override this externally */
-    function updateCursor() {
-      if (s <= 1.02) {
-        box.style.cursor = 'zoom-in';
-      } else if (dragging || spaceDragging) {
-        box.style.cursor = 'grabbing';
-      } else if (spaceHeld && hoveredBox === box) {
-        box.style.cursor = 'grab';
-      } else {
-        box.style.cursor = 'grab';
-      }
-    }
-    box._updateCursor = updateCursor;
-
-    box.addEventListener('mousedown', function (e) {
-      /* Only left button; never triggered by space or keyboard */
-      if (e.button !== 0) return;
-      if (s <= 1.02) return;           // not zoomed — nothing to pan
-      e.preventDefault();
-
-      dragging   = true;
-      dragMoved  = false;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      dragTx0    = tx;
-      dragTy0    = ty;
-      clearTimeout(resetTimer);        // freeze auto-reset while dragging
-      updateCursor();
-    });
-
-    /* Use document-level listeners so drag works even if pointer
-       briefly exits the box boundary during a fast swipe */
-    function onMouseMove(e) {
-      if (!dragging) return;
-      const dx = e.clientX - dragStartX;
-      const dy = e.clientY - dragStartY;
-
-      /* Mark as a real drag once the pointer moves > 2 px */
-      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
-
-      const clamped = clampTranslate(s, dragTx0 + dx, dragTy0 + dy);
-      tx = clamped.tx;
-      ty = clamped.ty;
-
-      /* No transition during live drag — instant follow */
-      img.style.transition = 'none';
-      img.style.transform  =
-        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-        ' scale(' + s.toFixed(4) + ')';
-    }
-
-    function onMouseUp(e) {
-      if (!dragging) return;
-      dragging = false;
-      updateCursor();
-
-      /* Restart auto-reset clock if cursor is outside the box */
-      if (!insideBox && s > ZOOM_MIN + 0.02) {
-        resetTimer = setTimeout(resetZoom, 600);
-      }
-    }
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup',   onMouseUp);
-
-    /* Clean up document listeners when the card is removed from DOM */
-    box._cleanupDrag = function () {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup',   onMouseUp);
-    };
-
-    /* Update cursor whenever zoom level changes */
-    const _origCommit = commitZoom;
-    function commitZoomWithCursor(animate) {
-      _origCommit(animate);
-      updateCursor();
-    }
-    /* Rebind so all callers get cursor update */
-    box.__commitZoom = commitZoomWithCursor;
-
-    /* Initialise cursor */
-    updateCursor();
-
-    /* Hint overlay */
-    const zoomHint = document.createElement('div');
-    zoomHint.className = 'zoom-hint';
-    zoomHint.textContent =
-      'Scroll \u2022 zoom    Drag \u2022 pan    Dbl-click \u2022 2.5\u00d7';
-    box.appendChild(zoomHint);
-
-    /* url row */
-    const urlRow = document.createElement('div');
-    urlRow.className = 'card-url-row';
-    const urlTxt = document.createElement('span');
-    urlTxt.className = 'card-url-text';
-    urlTxt.title = url;
-    urlTxt.textContent = url;
-    urlRow.appendChild(urlTxt);
-
-    /* toolbar */
-    const toolbar = document.createElement('div');
-    toolbar.className = 'card-toolbar';
-
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'tcopy';
-    copyBtn.textContent = 'Copy Link';
-    let copyTimer = null;
-
-    copyBtn.addEventListener('click', function () {
-      const doCopy = navigator.clipboard
-        ? navigator.clipboard.writeText(url)
-        : new Promise(function (res) {
-            const t = document.createElement('textarea');
-            t.value = url; t.style.cssText = 'position:fixed;opacity:0';
-            document.body.appendChild(t); t.select();
-            document.execCommand('copy'); t.remove(); res();
-          });
-      doCopy.then(function () {
-        copyBtn.textContent = 'Copied!';
-        copyBtn.classList.add('ok');
-        clearTimeout(copyTimer);
-        copyTimer = setTimeout(function () {
-          copyBtn.textContent = 'Copy Link';
-          copyBtn.classList.remove('ok');
-        }, 1600);
-      });
-    });
-
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'tremove';
-    removeBtn.textContent = 'Remove';
-
-    removeBtn.addEventListener('click', function () {
-      /* Clean up document-level drag listeners */
-      if (box._cleanupDrag) box._cleanupDrag();
-
-      /* Remove from master data & slot array */
-      allUrls.splice(i, 1);
-      const slot = slots.splice(i, 1)[0];
-      activeSet.delete(i);
-
-      /* Re-index remaining slots so their idx stays accurate */
-      for (let j = i; j < slots.length; j++) {
-        slots[j].dataset.idx = String(j);
-        const n = slots[j].querySelector('.card-num');
-        if (n) n.textContent = 'Image ' + (j + 1);
-      }
-
-      card.classList.add('out');
-      setTimeout(function () {
-        observer.unobserve(slot);
-        slot.remove();
-        refreshCount();
-      }, 240);
-    });
-
-    toolbar.appendChild(copyBtn);
-    toolbar.appendChild(removeBtn);
-
-    card.appendChild(hdr);
-    card.appendChild(box);
-    card.appendChild(urlRow);
-    card.appendChild(toolbar);
-
-    return card;
-  }
-
-  /* Upgrade slot → real card */
   function activateSlot(slot) {
-    const i = parseInt(slot.dataset.idx, 10);
+    var i = parseInt(slot.dataset.idx, 10);
     if (activeSet.has(i) || i >= allUrls.length) return;
     activeSet.add(i);
     slot.innerHTML = '';
     slot.appendChild(buildCard(i));
   }
 
-  /* Downgrade slot → empty placeholder, freeing the <img> memory */
   function deactivateSlot(slot) {
-    const i = parseInt(slot.dataset.idx, 10);
+    var i = parseInt(slot.dataset.idx, 10);
     if (!activeSet.has(i)) return;
     activeSet.delete(i);
-    /* Clean up any document-level drag listeners before wiping the card */
-    const b = slot.querySelector('.card-img-box');
-    if (b && b._cleanupDrag) b._cleanupDrag();
-    /* Null src first to encourage browser to release the decoded bitmap */
+    var box = slot.querySelector('.card-img-box');
+    if (box && box._destroy) box._destroy();
     slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
     slot.innerHTML = '';
   }
 
-  /* IntersectionObserver:
-     rootMargin '200% 0px 200% 0px' = start loading 2 viewport-heights
-     before the card enters view, and keep alive 2vp below.
-     This eliminates visible pop-in even at fast scroll speeds. */
   function buildObserver() {
     if (observer) observer.disconnect();
-
     observer = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          activateSlot(entry.target);
-        } else {
-          deactivateSlot(entry.target);
-        }
+        if (entry.isIntersecting) activateSlot(entry.target);
+        else deactivateSlot(entry.target);
       });
-    }, {
-      root: null,
-      rootMargin: '200% 0px 200% 0px',
-      threshold: 0
-    });
-
-    slots.forEach(function (slot) { observer.observe(slot); });
+    }, { root: null, rootMargin: '200% 0px 200% 0px', threshold: 0 });
+    slots.forEach(function (s) { observer.observe(s); });
   }
 
-  /* ════════════════════════════════════════════════════════
-     CLEAR
-  ════════════════════════════════════════════════════════ */
   function clearGallery() {
     if (observer) { observer.disconnect(); observer = null; }
     gallery.querySelectorAll('img').forEach(function (img) { img.src = ''; });
@@ -578,276 +203,540 @@
     refreshCount();
   }
 
-  /* ════════════════════════════════════════════════════════
-     BULK LOAD
-     Phase 1: Build all slot placeholders in chunks (fast, no images).
-     Phase 2: Hand off to IntersectionObserver → images load on demand.
-  ════════════════════════════════════════════════════════ */
-  bulkLoadBtn.addEventListener('click', async function () {
-    if (isLoading) return;
+  /* ──────────────────────────────────────────────────────────
+     7. CARD FACTORY
+     Zoom model: transform = translate(tx,ty) scale(s)
+       transform-origin is fixed at "0 0" permanently.
+       Cursor-anchored zoom math:
+         imgPoint = (cursor - translate) / scale
+         newTranslate = cursor - imgPoint * newScale
+       This keeps the pixel under the cursor stationary.
+     Drag model: mousedown captures start pos + translate,
+       mousemove on document applies delta + clamp.
+  ────────────────────────────────────────────────────────── */
+  function buildCard(i) {
+    var url = allUrls[i];
+    var idx = i + 1;
 
-    const urls = parseUrls(bulkArea.value).filter(isUrl);
-    if (!urls.length) { showSt('No valid URLs found. Check your input.', 'err'); return; }
+    /* ── outer card ── */
+    var card = document.createElement('div');
+    card.className = 'card';
 
-    isLoading = true;
-    bulkLoadBtn.disabled = true;
+    /* ── header ── */
+    var hdr  = document.createElement('div');
+    hdr.className = 'card-header';
+    var numEl  = document.createElement('span');
+    numEl.className = 'card-num';
+    numEl.textContent = 'Image ' + idx;
+    var dimsEl = document.createElement('span');
+    dimsEl.className = 'card-dims';
+    hdr.appendChild(numEl);
+    hdr.appendChild(dimsEl);
 
-    if (!appendMode.checked) clearGallery();
+    /* ── image box ── */
+    var box = document.createElement('div');
+    box.className = 'card-img-box';
+    box.style.height = currentImgH;
 
-    const startIdx = allUrls.length;
-    allUrls = allUrls.concat(urls);
+    var spinWrap = document.createElement('div');
+    spinWrap.className = 'card-spinner';
+    spinWrap.innerHTML = '<div class="spinner"></div>';
+    box.appendChild(spinWrap);
 
-    progWrap.classList.add('on');
-    progFill.style.width = '0%';
-    progLabel.textContent = 'Building grid for ' + urls.length + ' images\u2026';
+    var img = document.createElement('img');
+    img.className = 'card-img';
+    img.alt = 'Image ' + idx;
+    img.decoding = 'async';
+    img.style.transformOrigin = '0 0';
+    img.style.willChange = 'transform';
+    /* block browser native drag */
+    img.draggable = false;
 
-    /* Disconnect observer while we batch-insert slots for performance */
-    if (observer) observer.disconnect();
+    img.addEventListener('load', function () {
+      spinWrap.remove();
+      if (img.naturalWidth) {
+        dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
+      }
+    });
+    img.addEventListener('error', function () {
+      spinWrap.remove();
+      box.innerHTML = '<div class="card-err">\u26a0 Could not load image' +
+        '<small style="opacity:.45;word-break:break-all;display:block;margin-top:4px;">' +
+        url + '</small></div>';
+    });
 
-    const CHUNK = 200;
-    let frag = document.createDocumentFragment();
+    img.src = url;
+    box.appendChild(img);
 
-    for (let i = 0; i < urls.length; i++) {
-      const slot = makeSlot(startIdx + i);
-      slots.push(slot);
-      frag.appendChild(slot);
+    /* ──────────────────────────────────────────────────────
+       ZOOM + DRAG STATE  (per card, fully self-contained)
+    ────────────────────────────────────────────────────── */
+    var ZOOM_MIN    = 1;
+    var ZOOM_MAX    = 5;
+    var ZOOM_FACTOR = 1.13;
 
-      if ((i + 1) % CHUNK === 0 || i === urls.length - 1) {
-        gallery.appendChild(frag);
-        frag = document.createDocumentFragment();
+    var s  = 1, tx = 0, ty = 0;   /* current transform */
+    var insideBox  = false;
+    var dragActive = false;
+    var dragStartX = 0, dragStartY = 0;
+    var dragTx0    = 0, dragTy0    = 0;
+    var dragMoved  = false;
+    var resetTimerId = null;
 
-        const pct = Math.round(((i + 1) / urls.length) * 100);
-        progFill.style.width = pct + '%';
-        progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed\u2026';
-        refreshCount();
+    /* zoom badge */
+    var badge = document.createElement('div');
+    badge.className = 'zoom-badge';
+    box.appendChild(badge);
 
-        await new Promise(function (r) {
-          requestAnimationFrame(function () { requestAnimationFrame(r); });
-        });
+    /* hint */
+    var hint = document.createElement('div');
+    hint.className = 'zoom-hint';
+    hint.textContent = 'Scroll \u2022 zoom    Drag \u2022 pan    Dbl-click \u2022 2.5\u00d7';
+    box.appendChild(hint);
+
+    /* ── helpers ── */
+    function clamp(scale, ntx, nty) {
+      var bw = box.offsetWidth, bh = box.offsetHeight;
+      return {
+        tx: Math.min(0, Math.max(bw - bw * scale, ntx)),
+        ty: Math.min(0, Math.max(bh - bh * scale, nty))
+      };
+    }
+
+    function commit(animate) {
+      img.style.transition = animate
+        ? 'transform 0.3s cubic-bezier(0.25,0.46,0.45,0.94)'
+        : 'none';
+      img.style.transform =
+        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+        ' scale(' + s.toFixed(4) + ')';
+      badge.textContent = s.toFixed(1) + '\u00d7';
+      var zoomed = s > 1.02;
+      badge.classList.toggle('visible', zoomed);
+      box.classList.toggle('zoomed', zoomed);
+      updateCursor();
+    }
+
+    function resetZoom() {
+      clearTimeout(resetTimerId);
+      s = 1; tx = 0; ty = 0;
+      commit(true);
+    }
+
+    function updateCursor() {
+      if (!zoomAllowed()) { box.style.cursor = 'default'; return; }
+      if (s <= 1.02)      { box.style.cursor = 'zoom-in'; return; }
+      if (dragActive)     { box.style.cursor = 'grabbing'; return; }
+      box.style.cursor = 'grab';
+    }
+
+    /* ── WHEEL → zoom (only when zoomAllowed) ── */
+    box.addEventListener('wheel', function (e) {
+      if (!zoomAllowed()) return;   /* zoom toggle off — pass through */
+
+      /* strict boundary check */
+      var r  = box.getBoundingClientRect();
+      var cx = e.clientX - r.left;
+      var cy = e.clientY - r.top;
+      if (cx < 0 || cy < 0 || cx > r.width || cy > r.height) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      var factor = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+      var newS   = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s * factor));
+      if (newS === s) return;
+
+      /* cursor-anchored translate */
+      var ipx = (cx - tx) / s;
+      var ipy = (cy - ty) / s;
+      var c   = clamp(newS, cx - ipx * newS, cy - ipy * newS);
+      s = newS; tx = c.tx; ty = c.ty;
+      commit(false);
+
+      clearTimeout(resetTimerId);
+      if (s <= ZOOM_MIN + 0.02) resetZoom();
+    }, { passive: false });
+
+    /* ── MOUSEENTER / LEAVE ── */
+    box.addEventListener('mouseenter', function () {
+      insideBox = true;
+      clearTimeout(resetTimerId);
+      updateCursor();
+    });
+    box.addEventListener('mouseleave', function () {
+      insideBox = false;
+      if (s > ZOOM_MIN + 0.02 && !dragActive) {
+        resetTimerId = setTimeout(resetZoom, 600);
+      }
+      updateCursor();
+    });
+
+    /* ── MOUSEDOWN → start left-button drag (only when zoomed) ── */
+    box.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      if (s <= 1.02) return;       /* not zoomed, nothing to drag */
+      /* don't start drag if Space pan is active */
+      if (globalState.spaceHeld) return;
+
+      e.preventDefault();
+      dragActive = true;
+      dragMoved  = false;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      dragTx0    = tx;
+      dragTy0    = ty;
+      clearTimeout(resetTimerId);
+      updateCursor();
+    });
+
+    /* document-level mousemove/mouseup so drag survives leaving the box */
+    function onDocMove(e) {
+      if (!dragActive) return;
+      var dx = e.clientX - dragStartX;
+      var dy = e.clientY - dragStartY;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
+      var c = clamp(s, dragTx0 + dx, dragTy0 + dy);
+      tx = c.tx; ty = c.ty;
+      img.style.transition = 'none';
+      img.style.transform =
+        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+        ' scale(' + s.toFixed(4) + ')';
+    }
+
+    function onDocUp() {
+      if (!dragActive) return;
+      dragActive = false;
+      updateCursor();
+      if (!insideBox && s > ZOOM_MIN + 0.02) {
+        resetTimerId = setTimeout(resetZoom, 600);
       }
     }
 
-    /* Now observe all slots — visible ones get activated immediately */
-    buildObserver();
+    document.addEventListener('mousemove', onDocMove);
+    document.addEventListener('mouseup',   onDocUp);
 
-    refreshCount();
-    progLabel.textContent = urls.length + ' images queued \u2014 loading visible ones\u2026';
-    showSt(
-      urls.length + ' image' + (urls.length > 1 ? 's' : '') +
-      ' ready. Scroll to load more.',
-      'ok', 4000
-    );
-    setTimeout(function () {
-      progWrap.classList.remove('on');
-      progFill.style.width = '0%';
-    }, 2400);
+    /* ── DOUBLE-CLICK → toggle 2.5× ── */
+    box.addEventListener('dblclick', function (e) {
+      if (!zoomAllowed()) return;
+      if (dragMoved) return;   /* was a drag, not a dblclick */
+      var r  = box.getBoundingClientRect();
+      var cx = e.clientX - r.left;
+      var cy = e.clientY - r.top;
+      if (s > 1.05) {
+        resetZoom();
+      } else {
+        var tgt = 2.5;
+        var ipx = (cx - tx) / s;
+        var ipy = (cy - ty) / s;
+        var c   = clamp(tgt, cx - ipx * tgt, cy - ipy * tgt);
+        s = tgt; tx = c.tx; ty = c.ty;
+        commit(true);
+      }
+    });
 
-    bulkArea.value = '';
-    refreshTally();
-    isLoading = false;
-    bulkLoadBtn.disabled = false;
-  });
+    /* ── expose API for space-pan (section 8) ── */
+    box._zoom = {
+      get s()  { return s;  }, set s(v)  { s  = v; },
+      get tx() { return tx; }, set tx(v) { tx = v; },
+      get ty() { return ty; }, set ty(v) { ty = v; },
+      clamp:   clamp,
+      commit:  commit,
+      resetZoom: resetZoom,
+      get insideBox() { return insideBox; },
+      applyTransformImmediate: function () {
+        img.style.transition = 'none';
+        img.style.transform =
+          'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+          ' scale(' + s.toFixed(4) + ')';
+      }
+    };
 
-  bulkClearBtn.addEventListener('click', function () { bulkArea.value = ''; refreshTally(); });
-  clearAllBtn.addEventListener('click', clearGallery);
+    /* cleanup when card is virtualized away */
+    box._destroy = function () {
+      document.removeEventListener('mousemove', onDocMove);
+      document.removeEventListener('mouseup',   onDocUp);
+    };
 
-  /* ════════════════════════════════════════════════════════
-     KEYBOARD SCROLL  (W = up, S = down)
-     SPACE PAN MODE   (hold Space + drag = pan any zoomed image)
-     ─────────────────────────────────────────────────────
-     Space key:
-       • NEVER scrolls the page (always e.preventDefault())
-       • While held, activates "pan mode" on whatever zoomed
-         image the cursor is currently over.
-       • Cursor changes to "grab" on the hovered box, "grabbing"
-         while dragging.
-       • Releasing Space cancels pan mode and restores cursor.
+    updateCursor();
 
-     W / S scroll:
-       • Uses requestAnimationFrame loop for smooth motion.
-       • Speed is driven by the Scroll Speed slider (1-3):
-           1 = Slow  (base 40 px, max 120 px/frame)
-           2 = Med   (base 80 px, max 240 px/frame)
-           3 = Fast  (base 140 px, max 420 px/frame)
-       • Acceleration ramps from base → max while key held.
-       • Instant stop on key-up; window blur also stops scroll.
+    /* ── url row ── */
+    var urlRow = document.createElement('div');
+    urlRow.className = 'card-url-row';
+    var urlTxt = document.createElement('span');
+    urlTxt.className = 'card-url-text';
+    urlTxt.title = url; urlTxt.textContent = url;
+    urlRow.appendChild(urlTxt);
 
-     Guards (both features):
-       • Ignored when focus is in INPUT / TEXTAREA / contenteditable.
-  ════════════════════════════════════════════════════════ */
+    /* ── toolbar ── */
+    var toolbar = document.createElement('div');
+    toolbar.className = 'card-toolbar';
 
-  /* ── Scroll speed presets driven by #scrollSpeed slider ── */
-  const scrollSpeedEl = document.getElementById('scrollSpeed');
-  const scrollBadgeEl = document.getElementById('scrollBadge');
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'tcopy'; copyBtn.textContent = 'Copy Link';
+    var copyTimer = null;
+    copyBtn.addEventListener('click', function () {
+      var p = navigator.clipboard
+        ? navigator.clipboard.writeText(url)
+        : Promise.resolve().then(function () {
+            var t = document.createElement('textarea');
+            t.value = url; t.style.cssText = 'position:fixed;opacity:0';
+            document.body.appendChild(t); t.select();
+            document.execCommand('copy'); t.remove();
+          });
+      p.then(function () {
+        copyBtn.textContent = 'Copied!'; copyBtn.classList.add('ok');
+        clearTimeout(copyTimer);
+        copyTimer = setTimeout(function () {
+          copyBtn.textContent = 'Copy Link'; copyBtn.classList.remove('ok');
+        }, 1600);
+      });
+    });
 
-  const SPEED_PRESETS = [
-    { label: 'Slow',   base: 40,  max: 120,  ramp: 20 },
-    { label: 'Medium', base: 80,  max: 240,  ramp: 35 },
-    { label: 'Fast',   base: 140, max: 420,  ramp: 60 },
-  ];
+    var removeBtn = document.createElement('button');
+    removeBtn.className = 'tremove'; removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', function () {
+      if (box._destroy) box._destroy();
+      allUrls.splice(i, 1);
+      var slot = slots.splice(i, 1)[0];
+      activeSet.delete(i);
+      for (var j = i; j < slots.length; j++) {
+        slots[j].dataset.idx = String(j);
+        var n = slots[j].querySelector('.card-num');
+        if (n) n.textContent = 'Image ' + (j + 1);
+      }
+      card.classList.add('out');
+      setTimeout(function () {
+        if (observer) observer.unobserve(slot);
+        slot.remove();
+        refreshCount();
+      }, 240);
+    });
 
-  function getSpeedPreset() {
-    return SPEED_PRESETS[parseInt(scrollSpeedEl.value, 10) - 1];
+    toolbar.appendChild(copyBtn);
+    toolbar.appendChild(removeBtn);
+    card.appendChild(hdr);
+    card.appendChild(box);
+    card.appendChild(urlRow);
+    card.appendChild(toolbar);
+    return card;
   }
 
-  scrollSpeedEl.addEventListener('input', function () {
-    scrollBadgeEl.textContent = getSpeedPreset().label;
+  /* ──────────────────────────────────────────────────────────
+     8. KEYBOARD HANDLING
+     ─────────────────────────────────────────────────────────
+     W / S  → page scroll (speed from slider, rAF loop)
+     Space  → hold to pan mode: cursor changes to grab on the
+              hovered zoomed image; mousedown+drag pans it.
+              Space NEVER scrolls the page.
+  ────────────────────────────────────────────────────────── */
+  var globalState = {
+    spaceHeld:    false,
+    hoveredBox:   null,   /* box the cursor is currently over */
+    spacePanBox:  null,   /* box being space-panned right now */
+    spaceDragging: false,
+    spaceStartX:  0, spaceStartY: 0,
+    spaceTx0: 0, spaceTy0: 0
+  };
+
+  /* track hovered box */
+  document.addEventListener('mouseover', function (e) {
+    var box = e.target.closest ? e.target.closest('.card-img-box') : null;
+    globalState.hoveredBox = box || null;
   });
-  scrollBadgeEl.textContent = getSpeedPreset().label;
 
-  let scrollVelocity = 0;
-  let scrollRafId    = null;
-  let scrollDir      = 0;
-  const heldKeys     = {};
-
-  function isTypingTarget() {
-    const el = document.activeElement;
-    if (!el) return false;
-    const tag = el.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
-  }
+  /* ── rAF scroll loop ── */
+  var scrollVel = 0, scrollDir = 0, scrollRafId = null;
+  var heldKeys = {};
 
   function scrollTick() {
     if (scrollDir === 0) return;
-    const preset = getSpeedPreset();
-    scrollVelocity = Math.min(preset.max, scrollVelocity + preset.ramp);
-    window.scrollBy({ top: scrollDir * scrollVelocity, behavior: 'instant' });
+    var p = getScrollPreset();
+    scrollVel = Math.min(p.max, scrollVel + p.ramp);
+    window.scrollBy({ top: scrollDir * scrollVel, behavior: 'instant' });
     scrollRafId = requestAnimationFrame(scrollTick);
   }
 
   function startScroll(dir) {
     if (scrollDir === dir) return;
     cancelAnimationFrame(scrollRafId);
-    scrollDir      = dir;
-    scrollVelocity = getSpeedPreset().base;
-    scrollRafId    = requestAnimationFrame(scrollTick);
+    scrollDir = dir;
+    scrollVel = getScrollPreset().base;
+    scrollRafId = requestAnimationFrame(scrollTick);
   }
 
   function stopScroll() {
     cancelAnimationFrame(scrollRafId);
-    scrollDir      = 0;
-    scrollVelocity = 0;
+    scrollDir = 0; scrollVel = 0;
   }
 
-  /* ── SPACE PAN MODE ── */
-  let spaceHeld      = false;    // is Space currently down?
-  let spacePanBox    = null;     // which box is being panned
-  let spaceDragging  = false;
-  let spaceStartX    = 0;
-  let spaceStartY    = 0;
-  let spaceTx0       = 0;
-  let spaceTy0       = 0;
-  /* track which box the cursor is hovering — updated via mouseover */
-  let hoveredBox     = null;
-
-  document.addEventListener('mouseover', function (e) {
-    const box = e.target.closest('.card-img-box');
-    hoveredBox = box || null;
-  });
-
-  /* Space keydown: activate pan mode on the hovered box (if zoomed) */
+  /* ── keydown ── */
   document.addEventListener('keydown', function (e) {
-    /* ── SPACE ── */
+
+    /* SPACE — always block default (never scroll page) */
     if (e.code === 'Space') {
-      e.preventDefault();          // NEVER let space scroll the page
-      if (spaceHeld) return;       // already down
-      spaceHeld = true;
-      /* Activate grab cursor on whatever zoomed box cursor is over */
-      if (hoveredBox && hoveredBox._zoomState && hoveredBox._zoomState.s > 1.02) {
-        hoveredBox.style.cursor = 'grab';
-        spacePanBox = hoveredBox;
+      e.preventDefault();
+      if (globalState.spaceHeld) return;   /* already down */
+      globalState.spaceHeld = true;
+
+      /* activate grab cursor on hovered zoomed box */
+      var box = globalState.hoveredBox;
+      if (box && box._zoom && box._zoom.s > 1.02 && zoomAllowed()) {
+        box.style.cursor = 'grab';
+        globalState.spacePanBox = box;
       }
       return;
     }
 
-    /* ── W / S ── */
-    if (e.repeat) return;
-    if (isTypingTarget()) return;
-    const key = e.key.toLowerCase();
-    if (key !== 'w' && key !== 's') return;
+    /* W / S — page scroll */
+    if (e.repeat || isTypingTarget()) return;
+    var k = e.key.toLowerCase();
+    if (k !== 'w' && k !== 's') return;
     e.preventDefault();
-    heldKeys[key] = true;
-    startScroll(key === 's' ? 1 : -1);
+    heldKeys[k] = true;
+    startScroll(k === 's' ? 1 : -1);
   });
 
+  /* ── keyup ── */
   document.addEventListener('keyup', function (e) {
+
     if (e.code === 'Space') {
-      spaceHeld = false;
-      /* Release pan mode */
-      if (spacePanBox) {
-        /* Restore cursor based on zoom state */
-        if (spacePanBox._zoomState) {
-          spacePanBox.style.cursor =
-            spacePanBox._zoomState.s > 1.02 ? 'grab' : 'zoom-in';
-        }
-        spacePanBox = null;
+      globalState.spaceHeld    = false;
+      globalState.spaceDragging = false;
+      /* restore cursor */
+      if (globalState.spacePanBox && globalState.spacePanBox._zoom) {
+        var z = globalState.spacePanBox._zoom;
+        globalState.spacePanBox.style.cursor = z.s > 1.02 ? 'grab' : 'zoom-in';
       }
-      spaceDragging = false;
+      globalState.spacePanBox = null;
       return;
     }
-    const key = e.key.toLowerCase();
-    delete heldKeys[key];
+
+    var k = e.key.toLowerCase();
+    delete heldKeys[k];
     if (!heldKeys['w'] && !heldKeys['s']) stopScroll();
   });
 
-  /* Space + mousedown on a zoomed box starts space-pan drag */
+  /* ── Space + mousedown → start space-pan ── */
   document.addEventListener('mousedown', function (e) {
-    if (!spaceHeld || e.button !== 0) return;
-    if (!spacePanBox || !spacePanBox._zoomState) return;
-    const zs = spacePanBox._zoomState;
-    if (zs.s <= 1.02) return;        // not zoomed — nothing to pan
+    if (!globalState.spaceHeld || e.button !== 0) return;
+    var box = globalState.spacePanBox;
+    if (!box || !box._zoom) return;
+    var z = box._zoom;
+    if (z.s <= 1.02) return;
 
     e.preventDefault();
-    spaceDragging  = true;
-    spaceStartX    = e.clientX;
-    spaceStartY    = e.clientY;
-    spaceTx0       = zs.tx;
-    spaceTy0       = zs.ty;
-    spacePanBox.style.cursor = 'grabbing';
-  }, true);    /* capture so it fires before card's own mousedown */
+    e.stopPropagation();
+    globalState.spaceDragging = true;
+    globalState.spaceStartX   = e.clientX;
+    globalState.spaceStartY   = e.clientY;
+    globalState.spaceTx0      = z.tx;
+    globalState.spaceTy0      = z.ty;
+    box.style.cursor = 'grabbing';
+  }, { capture: true });
 
+  /* ── Space drag move ── */
   document.addEventListener('mousemove', function (e) {
-    if (!spaceDragging || !spacePanBox || !spacePanBox._zoomState) return;
-    const zs  = spacePanBox._zoomState;
-    const dx  = e.clientX - spaceStartX;
-    const dy  = e.clientY - spaceStartY;
-
-    /* Re-use the same clampTranslate logic — stored on the box */
-    const clamped = spacePanBox._clamp(zs.s, spaceTx0 + dx, spaceTy0 + dy);
-    zs.tx = clamped.tx;
-    zs.ty = clamped.ty;
-
-    const img = spacePanBox.querySelector('.card-img');
-    if (img) {
-      img.style.transition = 'none';
-      img.style.transform  =
-        'translate(' + zs.tx.toFixed(2) + 'px,' + zs.ty.toFixed(2) + 'px)' +
-        ' scale(' + zs.s.toFixed(4) + ')';
-    }
+    if (!globalState.spaceDragging) return;
+    var box = globalState.spacePanBox;
+    if (!box || !box._zoom) return;
+    var z  = box._zoom;
+    var dx = e.clientX - globalState.spaceStartX;
+    var dy = e.clientY - globalState.spaceStartY;
+    var c  = z.clamp(z.s, globalState.spaceTx0 + dx, globalState.spaceTy0 + dy);
+    z.tx = c.tx; z.ty = c.ty;
+    z.applyTransformImmediate();
   });
 
+  /* ── Space drag up ── */
   document.addEventListener('mouseup', function (e) {
-    if (!spaceDragging) return;
-    spaceDragging = false;
-    if (spacePanBox && spaceHeld) {
-      spacePanBox.style.cursor = 'grab';
+    if (!globalState.spaceDragging) return;
+    globalState.spaceDragging = false;
+    var box = globalState.spacePanBox;
+    if (box && globalState.spaceHeld) {
+      box.style.cursor = 'grab';
     }
   });
 
+  /* reset on focus loss */
   window.addEventListener('blur', function () {
     stopScroll();
-    spaceHeld     = false;
-    spaceDragging = false;
-    if (spacePanBox) {
-      if (spacePanBox._zoomState) {
-        spacePanBox.style.cursor =
-          spacePanBox._zoomState.s > 1.02 ? 'grab' : 'zoom-in';
+    heldKeys = {};
+    if (globalState.spaceHeld) {
+      globalState.spaceHeld    = false;
+      globalState.spaceDragging = false;
+      if (globalState.spacePanBox && globalState.spacePanBox._zoom) {
+        var z = globalState.spacePanBox._zoom;
+        globalState.spacePanBox.style.cursor = z.s > 1.02 ? 'grab' : 'zoom-in';
       }
-      spacePanBox = null;
+      globalState.spacePanBox = null;
     }
   });
 
-  /* ── BACK TO TOP ── */
+  /* ──────────────────────────────────────────────────────────
+     9. BULK LOAD
+  ────────────────────────────────────────────────────────── */
+  bulkLoadBtn.addEventListener('click', async function () {
+    if (isLoading) return;
+    var urls = parseUrls(bulkArea.value).filter(isUrl);
+    if (!urls.length) { showSt('No valid URLs found.', 'err'); return; }
+
+    isLoading = true;
+    bulkLoadBtn.disabled = true;
+
+    if (!appendMode.checked) clearGallery();
+
+    var startIdx = allUrls.length;
+    allUrls = allUrls.concat(urls);
+
+    progWrap.classList.add('on');
+    progFill.style.width = '0%';
+    progLabel.textContent = 'Building grid for ' + urls.length + ' images\u2026';
+
+    if (observer) observer.disconnect();
+
+    var CHUNK = 200, frag = document.createDocumentFragment();
+    for (var i = 0; i < urls.length; i++) {
+      var slot = makeSlot(startIdx + i);
+      slots.push(slot);
+      frag.appendChild(slot);
+
+      if ((i + 1) % CHUNK === 0 || i === urls.length - 1) {
+        gallery.appendChild(frag);
+        frag = document.createDocumentFragment();
+        progFill.style.width = Math.round(((i + 1) / urls.length) * 100) + '%';
+        progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed\u2026';
+        refreshCount();
+        await new Promise(function (r) {
+          requestAnimationFrame(function () { requestAnimationFrame(r); });
+        });
+      }
+    }
+
+    buildObserver();
+    refreshCount();
+    progLabel.textContent = urls.length + ' images ready!';
+    showSt(urls.length + ' image' + (urls.length > 1 ? 's' : '') + ' loaded.', 'ok', 4000);
+    setTimeout(function () {
+      progWrap.classList.remove('on');
+      progFill.style.width = '0%';
+    }, 2400);
+
+    bulkArea.value = '';
+    bulkTally.innerHTML = '<b>0</b> URLs detected';
+    isLoading = false;
+    bulkLoadBtn.disabled = false;
+  });
+
+  bulkClearBtn.addEventListener('click', function () {
+    bulkArea.value = '';
+    bulkTally.innerHTML = '<b>0</b> URLs detected';
+  });
+  clearAllBtn.addEventListener('click', clearGallery);
+
+  /* ──────────────────────────────────────────────────────────
+     10. BACK TO TOP
+  ────────────────────────────────────────────────────────── */
   window.addEventListener('scroll', function () {
     btt.classList.toggle('show', window.scrollY > 320);
   }, { passive: true });
@@ -856,7 +745,7 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
+  /* init */
   refreshCount();
-  refreshTally();
 
 })();
