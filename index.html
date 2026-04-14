@@ -9,70 +9,90 @@
 </head>
 <body>
 
-<!-- HEADER -->
-<header>
+<!-- ═══════════════════════════════════════════════════
+     STICKY HEADER  —  always visible while scrolling
+     Contains: logo | image-size | scroll-speed | zoom toggle
+════════════════════════════════════════════════════ -->
+<header id="mainHeader">
+
   <div class="logo">
     <div class="logo-icon">
-      <img src="batman-logo.png" alt="Batman">
+      <img src="batman-logo.png" alt="Batman logo">
     </div>
     <span class="logo-text">Bat-Viewer</span>
   </div>
 
-  <div class="size-control">
-    <span class="size-label">Image Size</span>
-    <input type="range" class="size-slider" id="sizer" min="1" max="10" value="3" step="1">
-    <span class="size-badge" id="sizeBadge">Medium</span>
+  <!-- Image size slider -->
+  <div class="ctrl-group">
+    <span class="ctrl-label">Image Size</span>
+    <input type="range" class="ctrl-slider" id="sizer"
+           min="1" max="10" value="3" step="1">
+    <span class="ctrl-badge" id="sizeBadge">Medium</span>
   </div>
 
-  <div class="size-control">
-    <span class="size-label">Scroll Speed</span>
-    <input type="range" class="size-slider" id="scrollSpeed" min="1" max="3" value="2" step="1">
-    <span class="size-badge" id="scrollBadge">Medium</span>
+  <!-- W/S keyboard scroll speed — 5 fine-grained steps -->
+  <div class="ctrl-group">
+    <span class="ctrl-label">Scroll Speed <span class="ctrl-sub">(W/S keys)</span></span>
+    <input type="range" class="ctrl-slider" id="scrollSpeed"
+           min="1" max="5" value="2" step="1">
+    <span class="ctrl-badge" id="scrollBadge">Slow</span>
   </div>
 
-  <label class="header-toggle" id="zoomToggleWrap" title="Enable / disable scroll-to-zoom on images">
-    <input type="checkbox" id="zoomEnabled" checked>
-    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-    <span class="size-label">Zoom</span>
+  <!-- Zoom enable/disable toggle — OFF by default -->
+  <label class="ctrl-toggle" title="Enable scroll-to-zoom on images">
+    <input type="checkbox" id="zoomEnabled">
+    <span class="tog-track"><span class="tog-thumb"></span></span>
+    <span class="ctrl-label">Zoom</span>
   </label>
+
 </header>
 
-<!-- INPUT -->
+<!-- ═══════════════════════════════════════════════════
+     URL INPUT
+════════════════════════════════════════════════════ -->
 <div class="input-section">
-  <textarea class="bulk-area" id="bulkArea" placeholder="Paste up to 1,000 image URLs — one per line or comma-separated.
-New load automatically replaces previous images.
+  <textarea class="bulk-area" id="bulkArea"
+    placeholder="Paste up to 1,000 image URLs — one per line or comma-separated.
+Each new load automatically replaces the previous set.
 
-https://example.com/image1.jpg
-https://example.com/image2.jpg
-https://example.com/image3.jpg"></textarea>
+https://example.com/photo1.jpg
+https://example.com/photo2.jpg"></textarea>
 
   <div class="bulk-footer">
     <span class="bulk-tally" id="bulkTally"><b>0</b> URLs detected</span>
-    <label class="replace-toggle">
-      <input type="checkbox" id="appendMode"> Append to existing
+    <label class="append-toggle">
+      <input type="checkbox" id="appendMode">
+      <span>Append to existing</span>
     </label>
     <button class="btn btn-ghost" id="bulkClearBtn">Clear Input</button>
-    <button class="btn btn-gold" id="bulkLoadBtn">Load Images</button>
+    <button class="btn btn-gold"  id="bulkLoadBtn">Load Images</button>
   </div>
-  <div class="status hide" id="bSt"></div>
-  <div class="progress-wrap" id="progWrap">
+
+  <div class="status hide" id="statusMsg"></div>
+
+  <div class="prog-wrap hide" id="progWrap">
     <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
     <div class="prog-label" id="progLabel"></div>
   </div>
 </div>
 
-<!-- GALLERY TOOLBAR -->
+<!-- ═══════════════════════════════════════════════════
+     GALLERY TOOLBAR
+════════════════════════════════════════════════════ -->
 <div class="gtoolbar">
-  <div class="gstats"><b id="gCount">0</b> images loaded</div>
-  <button class="btn btn-ghost" id="clearAll">Clear All</button>
+  <span class="gstats"><b id="gCount">0</b> images loaded</span>
+  <button class="btn btn-ghost" id="clearAllBtn">Clear All</button>
 </div>
 
-<!-- GALLERY -->
+<!-- ═══════════════════════════════════════════════════
+     GALLERY
+════════════════════════════════════════════════════ -->
 <div class="gallery-wrap">
   <div id="gallery"></div>
 </div>
 
-<button id="btt">&#8593;</button>
+<!-- Back-to-top -->
+<button id="btt" aria-label="Back to top">&#8593;</button>
 
 <script src="app.js"></script>
 </body>
