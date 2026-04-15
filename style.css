@@ -1,8 +1,7 @@
 /* ══════════════════════════════════════════════════════════
-   BAT-VIEWER  style.css
+   BAT-VIEWER  style.css  v11
 ══════════════════════════════════════════════════════════ */
 
-/* ── Variables ── */
 :root {
   --gold:    #f5c518;
   --gold2:   #c49a10;
@@ -10,12 +9,11 @@
   --green:   #2ecc71;
   --border:  rgba(245,197,24,0.16);
   --border2: rgba(245,197,24,0.38);
-  --surface: rgba(6,6,12,0.91);
+  --surface: rgba(6,6,12,0.92);
   --card:    rgba(10,10,18,0.93);
   --muted:   rgba(255,255,255,0.48);
 }
 
-/* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -33,83 +31,27 @@ body::before {
 }
 
 /* ══════════════════════════════════════════════════════════
-   STICKY SHELL  — wraps topbar + inputbar + gtoolbar
-   position:sticky keeps the whole block at the top.
+   STICKY TOPBAR — controls only, always on top
 ══════════════════════════════════════════════════════════ */
-#stickyShell {
+#topbar {
   position: sticky;
   top: 0;
   z-index: 500;
-  /* stack above body overlay */
-}
-
-/* ── Row 1: topbar (logo + sliders + zoom toggle) ── */
-#topbar {
   background: var(--surface);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   padding: 0 18px;
-  height: 56px;
+  height: 54px;
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 20px;
   overflow-x: auto;
   scrollbar-width: none;
 }
 #topbar::-webkit-scrollbar { display: none; }
 
-/* ── Row 2: inputbar (textarea + buttons) ── */
-#inputbar {
-  background: rgba(4,4,10,0.94);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--border);
-  padding: 10px 18px;
-}
-
-#bulkArea {
-  width: 100%;
-  height: 64px;
-  padding: 8px 12px;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 6px;
-  color: #fff;
-  font-size: 11px;
-  font-family: 'Courier New', monospace;
-  resize: none;
-  outline: none;
-  display: block;
-  margin-bottom: 8px;
-  line-height: 1.6;
-  transition: border-color 0.15s;
-}
-#bulkArea:focus        { border-color: var(--gold); }
-#bulkArea::placeholder { color: rgba(255,255,255,0.22); }
-
-#inputControls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-}
-
-/* ── Gallery toolbar ── */
-#gtoolbar {
-  background: rgba(4,4,10,0.92);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(245,197,24,0.10);
-  padding: 6px 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-/* ══════════════════════════════════════════════════════════
-   LOGO
-══════════════════════════════════════════════════════════ */
+/* ── Logo ── */
 .logo { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
 
 .logo-icon {
@@ -127,12 +69,8 @@ body::before {
   white-space: nowrap;
 }
 
-/* ══════════════════════════════════════════════════════════
-   CONTROLS (shared)
-══════════════════════════════════════════════════════════ */
-.ctrl-group {
-  display: flex; align-items: center; gap: 7px; flex-shrink: 0;
-}
+/* ── Shared control group ── */
+.ctrl-group { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 
 .ctrl-label {
   font-size: 10px; color: var(--muted);
@@ -173,7 +111,6 @@ body::before {
   cursor: pointer; flex-shrink: 0; user-select: none;
 }
 .ctrl-toggle input { display: none; }
-
 .tog-track {
   width: 32px; height: 17px;
   background: rgba(255,255,255,0.13);
@@ -181,9 +118,7 @@ body::before {
   border-radius: 9px; position: relative;
   transition: background 0.2s, border-color 0.2s; flex-shrink: 0;
 }
-.ctrl-toggle input:checked + .tog-track {
-  background: var(--gold); border-color: var(--gold);
-}
+.ctrl-toggle input:checked + .tog-track { background: var(--gold); border-color: var(--gold); }
 .tog-thumb {
   position: absolute; top: 2px; left: 2px;
   width: 11px; height: 11px; border-radius: 50%;
@@ -192,9 +127,52 @@ body::before {
 .ctrl-toggle input:checked + .tog-track .tog-thumb { transform: translateX(15px); }
 
 /* ══════════════════════════════════════════════════════════
-   INPUT BAR ELEMENTS
+   PAGE BODY — scrollable content
 ══════════════════════════════════════════════════════════ */
-.bulk-tally { font-size: 11px; color: var(--muted); flex: 1; min-width: 60px; }
+#pageBody { position: relative; z-index: 1; }
+
+/* ── Input bar (scrolls with page) ── */
+#inputbar {
+  background: rgba(4,4,10,0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 18px;
+}
+
+#bulkArea {
+  width: 100%;
+  height: 72px;
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 11px; font-family: 'Courier New', monospace;
+  resize: vertical; outline: none;
+  display: block; margin-bottom: 8px;
+  line-height: 1.6;
+  transition: border-color 0.15s;
+}
+#bulkArea:focus        { border-color: var(--gold); }
+#bulkArea::placeholder { color: rgba(255,255,255,0.22); }
+
+#inputControls {
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+}
+
+/* ── Gallery toolbar ── */
+#gtoolbar {
+  background: rgba(4,4,10,0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(245,197,24,0.09);
+  padding: 6px 18px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+/* ── Shared text pieces ── */
+.bulk-tally { font-size: 11px; color: var(--muted); flex: 1; min-width: 55px; }
 .bulk-tally b { color: var(--gold); }
 
 .append-toggle {
@@ -204,7 +182,10 @@ body::before {
 }
 .append-toggle input { accent-color: var(--gold); width: 12px; height: 12px; }
 
-/* Buttons */
+.gstats { font-size: 11px; color: var(--muted); }
+.gstats b { color: #fff; font-weight: 700; }
+
+/* ── Buttons ── */
 .btn {
   height: 32px; padding: 0 13px;
   border: none; border-radius: 5px;
@@ -223,7 +204,7 @@ body::before {
 }
 .btn-ghost:hover { color: #fff; border-color: rgba(255,255,255,0.38); }
 
-/* Status + progress */
+/* ── Status + Progress ── */
 .status { font-size: 11px; margin-top: 5px; min-height: 15px; transition: opacity 0.3s; }
 .status.err  { color: var(--red); }
 .status.ok   { color: var(--gold); }
@@ -235,33 +216,10 @@ body::before {
 .prog-fill  { height: 100%; background: var(--gold); border-radius: 2px; width: 0; transition: width 0.1s; }
 .prog-label { font-size: 10px; color: var(--muted); margin-top: 4px; }
 
-/* Gallery stats */
-.gstats { font-size: 11px; color: var(--muted); }
-.gstats b { color: #fff; font-weight: 700; }
-
-/* ══════════════════════════════════════════════════════════
-   URL INDEX  (Ctrl+F target — not visually displayed)
-   Contains plain text of every loaded URL so browser find
-   can search them. Visually hidden but NOT display:none
-   (display:none removes from find index in most browsers).
-══════════════════════════════════════════════════════════ */
-#urlIndex {
-  position: absolute;
-  width: 1px; height: 1px;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  user-select: none;
-  /* NOT display:none — that would hide from Ctrl+F */
-  font-size: 1px;
-  color: transparent;
-  line-height: 1;
-}
-
 /* ══════════════════════════════════════════════════════════
    GALLERY
 ══════════════════════════════════════════════════════════ */
-.gallery-wrap { padding: 16px; position: relative; z-index: 1; }
+.gallery-wrap { padding: 16px; }
 
 #gallery {
   display: grid;
@@ -269,11 +227,13 @@ body::before {
   max-width: 1800px;
   margin: 0 auto;
   grid-template-columns: repeat(3, minmax(0,1fr));
-  /* align-items:start so cards don't stretch to row height */
   align-items: start;
 }
 
-/* Virtual slot — reserves grid space, no image yet */
+/* ── Virtual slot ──
+   min-height is set inline by JS.
+   The slot is in normal document flow, so Ctrl+F correctly
+   scrolls to its position when a URL inside it is matched.    */
 .vslot {
   border-radius: 8px;
   background: rgba(10,10,18,0.5);
@@ -321,31 +281,24 @@ body::before {
 .card-num  { font-size: 9px; font-weight: 700; color: rgba(255,255,255,0.40); text-transform: uppercase; letter-spacing: 1px; }
 .card-dims { font-size: 9px; color: rgba(255,255,255,0.30); font-variant-numeric: tabular-nums; }
 
-/* ─────────────────────────────────────────────────────────
-   IMAGE BOX
-   Key design: the box has NO fixed height.
-   The <img> uses width:100% + height:auto so it renders at
-   its natural aspect ratio — zero black bars, zero wasted space.
-   The size slider sets a max-height on the box; if the image
-   is taller it is capped (with overflow:hidden), otherwise it
-   just fills its natural height.
-   overflow:hidden is still needed to clip zoomed images.
-───────────────────────────────────────────────────────── */
+/* ── Image box ──
+   NO fixed height — image renders at natural aspect ratio.
+   max-height (set inline by JS) caps very tall images.
+   No background colour → no black bars.                       */
 .card-img-box {
   width: 100%;
   position: relative;
   overflow: hidden;
   flex-shrink: 0;
-  background: transparent;   /* NO black background */
+  background: transparent;
   cursor: default;
-  /* max-height set inline by JS from size slider */
 }
 
+/* image fills card width, height is auto (natural ratio) */
 .card-img {
   width: 100%;
-  height: auto;              /* natural aspect ratio — no black bars */
+  height: auto;
   display: block;
-  /* transform-origin fixed at 0 0 by JS for zoom */
   will-change: transform;
   image-rendering: auto;
   -webkit-user-drag: none;
@@ -353,14 +306,13 @@ body::before {
   pointer-events: none;
 }
 
-/* Spinner — absolutely positioned so it doesn't affect box height */
+/* spinner */
 .card-spinner {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,0.35); z-index: 2;
-  min-height: 80px;
+  background: rgba(0,0,0,0.30); z-index: 2;
+  min-height: 70px;
 }
-
 .spinner {
   width: 22px; height: 22px;
   border: 2px solid rgba(255,255,255,0.08);
@@ -375,11 +327,14 @@ body::before {
   color: rgba(255,255,255,0.28); font-size: 10px; width: 100%;
 }
 
-/* URL row — visible text node in DOM for Ctrl+F */
+/* ── URL row ──
+   Each card's URL row is a plain visible text node in the DOM.
+   Because it lives inside .vslot (normal flow, not position:absolute),
+   the browser's Ctrl+F will scroll exactly to this card when matched. */
 .card-url-row {
   padding: 5px 11px;
   border-top: 1px solid var(--border);
-  background: rgba(0,0,0,0.18);
+  background: rgba(0,0,0,0.16);
   flex-shrink: 0;
 }
 .card-url-text {
@@ -406,19 +361,13 @@ body::before {
   cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;
   transition: all 0.13s;
 }
-.tcopy {
-  background: rgba(245,197,24,0.08); color: var(--gold);
-  border: 1px solid rgba(245,197,24,0.18);
-}
+.tcopy { background: rgba(245,197,24,0.08); color: var(--gold); border: 1px solid rgba(245,197,24,0.18); }
 .tcopy:hover { background: rgba(245,197,24,0.16); }
 .tcopy.ok { background: rgba(46,204,113,0.08); color: var(--green); border-color: rgba(46,204,113,0.20); }
-.tremove {
-  background: rgba(231,76,60,0.08); color: var(--red);
-  border: 1px solid rgba(231,76,60,0.18);
-}
+.tremove { background: rgba(231,76,60,0.08); color: var(--red); border: 1px solid rgba(231,76,60,0.18); }
 .tremove:hover { background: rgba(231,76,60,0.16); }
 
-/* Zoom overlays */
+/* ── Zoom overlays ── */
 .zoom-badge {
   position: absolute; top: 6px; right: 6px;
   background: rgba(0,0,0,0.70); color: var(--gold);
@@ -426,8 +375,7 @@ body::before {
   border: 1px solid rgba(245,197,24,0.25);
   pointer-events: none;
   opacity: 0; transform: translateY(-3px);
-  transition: opacity 0.16s, transform 0.16s;
-  z-index: 10;
+  transition: opacity 0.16s, transform 0.16s; z-index: 10;
 }
 .zoom-badge.visible { opacity: 1; transform: translateY(0); }
 
@@ -452,8 +400,7 @@ body::before {
   border: none; font-size: 19px; font-weight: 900;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
   opacity: 0; pointer-events: none;
-  transition: opacity 0.22s, transform 0.14s;
-  z-index: 600;
+  transition: opacity 0.22s, transform 0.14s; z-index: 600;
   box-shadow: 0 3px 16px rgba(245,197,24,0.40);
 }
 #btt.show { opacity: 1; pointer-events: auto; }
@@ -462,5 +409,20 @@ body::before {
 /* ══════════════════════════════════════════════════════════
    RESPONSIVE
 ══════════════════════════════════════════════════════════ */
-@media (max-width: 820px)  { #gallery { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-@media (max-width: 500px)  { #gallery { grid-template-columns: 1fr; } }
+@media (max-width: 820px) { #gallery { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 500px) { #gallery { grid-template-columns: 1fr; } }
+
+/* url-label — the tiny text inside each vslot when card is not rendered.
+   Invisible visually but present as a real DOM text node.
+   NOT display:none (would hide from Ctrl+F in most browsers).
+   NOT position:absolute (would cause browser to scroll to wrong place).
+   Just opacity:0 + font-size:1px so it takes negligible space.         */
+.url-label {
+  display: block;
+  font-size: 1px;
+  line-height: 1px;
+  color: transparent;
+  overflow: hidden;
+  user-select: none;
+  pointer-events: none;
+}

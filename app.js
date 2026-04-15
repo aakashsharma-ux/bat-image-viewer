@@ -1,46 +1,27 @@
 /* ════════════════════════════════════════════════════════════
-   BAT-VIEWER  app.js  v10
+   BAT-VIEWER  app.js  v11
 
-   Three core problems solved vs previous versions:
+   Ctrl+F fix:
+   ─ Each .vslot contains a tiny .url-label <span> holding the
+     URL as plain text, even when the full card is not rendered.
+   ─ Because the slot is in normal document flow (not position:
+     absolute or display:none), the browser scrolls directly to
+     that slot when find-in-page matches the URL.
+   ─ When the slot is activated, the full card (which also shows
+     the URL in .card-url-text) replaces the label.
+   ─ NO scrollTo() or focus() calls that could hijack navigation.
 
-   1. Ctrl+F URL SEARCH
-      Every URL is inserted as a plain text node into #urlIndex,
-      a position:absolute element that is NOT display:none (which
-      would hide text from browser find).  Updated atomically on
-      every load/remove.  All 1,000 URLs are always findable even
-      though only ~30 card DOM nodes are live at a time.
-
-   2. NO BLACK BARS IN IMAGE BOX
-      card-img-box has NO fixed height.  The <img> uses
-      width:100%; height:auto — it renders at its natural aspect
-      ratio.  The size slider sets max-height on the box so very
-      tall images are capped, but wide/landscape images fill
-      exactly their natural height with zero wasted space.
-
-   3. STICKY CONTROLS
-      All controls live inside #stickyShell which is
-      position:sticky top:0 z-index:500 — the logo, sliders,
-      zoom toggle, URL textarea, and gallery toolbar are always
-      visible regardless of scroll position.
-
-   Other features:
-   ─ Virtual gallery  (IntersectionObserver, ~30-80 live nodes)
-   ─ W/S keyboard scroll  (5 speed steps, does NOT affect wheel)
-   ─ Zoom (off by default, checkbox enables it)
-     · wheel zoom anchored to cursor
-     · left-drag pan when zoomed
-     · double-click toggles 2.5×
-     · Space + drag = space-pan
+   Sticky fix:
+   ─ Only #topbar is position:sticky.
+   ─ Input bar, gallery toolbar, and gallery scroll normally.
 ════════════════════════════════════════════════════════════ */
 
 (function () {
   'use strict';
 
-  /* ─── DOM refs ─── */
   function el(id) { return document.getElementById(id); }
 
   var gallery       = el('gallery');
-  var urlIndex      = el('urlIndex');   /* Ctrl+F target */
   var bulkArea      = el('bulkArea');
   var bulkTally     = el('bulkTally');
   var bulkLoadBtn   = el('bulkLoadBtn');
@@ -59,11 +40,7 @@
   var scrollBadgeEl = el('scrollBadge');
   var zoomEnabledEl = el('zoomEnabled');
 
-  /* ════════════════════════════════════════════════════════
-     SIZE PRESETS
-     Sets max-height on card-img-box + grid columns.
-     Image height is NATURAL (auto) up to this max.
-  ════════════════════════════════════════════════════════ */
+  /* ── Size presets ── */
   var SIZE_PRESETS = [
     { label: 'Tiny',      cols: 5, maxH: '120px' },
     { label: 'Small',     cols: 4, maxH: '160px' },
@@ -85,32 +62,24 @@
     sizeBadgeEl.textContent = p.label;
     gallery.style.gridTemplateColumns =
       p.cols === 1 ? '1fr' : 'repeat(' + p.cols + ',minmax(0,1fr))';
-    /* update live boxes */
-    var boxes = gallery.querySelectorAll('.card-img-box');
-    for (var i = 0; i < boxes.length; i++) {
-      boxes[i].style.maxHeight = p.maxH;
-    }
-    /* update slot min-height hints */
-    var slots2 = gallery.querySelectorAll('.vslot');
-    for (var j = 0; j < slots2.length; j++) {
-      slots2[j].style.minHeight = p.maxH;
-    }
+    gallery.querySelectorAll('.card-img-box').forEach(function (b) {
+      b.style.maxHeight = p.maxH;
+    });
+    gallery.querySelectorAll('.vslot').forEach(function (s) {
+      s.style.minHeight = p.maxH;
+    });
   }
 
-  sizerEl.addEventListener('input', function () {
-    applySize(parseInt(sizerEl.value, 10));
-  });
+  sizerEl.addEventListener('input', function () { applySize(parseInt(sizerEl.value, 10)); });
   applySize(parseInt(sizerEl.value, 10));
 
-  /* ════════════════════════════════════════════════════════
-     SCROLL SPEED  (W/S keys only — wheel NEVER touched)
-  ════════════════════════════════════════════════════════ */
+  /* ── Scroll speed presets (W/S only) ── */
   var SCROLL_PRESETS = [
-    { label: 'Very Slow', base: 15,  max:  50, ramp:  7  },
-    { label: 'Slow',      base: 30,  max: 100, ramp: 13  },
-    { label: 'Medium',    base: 55,  max: 170, ramp: 22  },
-    { label: 'Fast',      base: 90,  max: 260, ramp: 36  },
-    { label: 'Very Fast', base: 140, max: 400, ramp: 55  },
+    { label: 'Very Slow', base: 15,  max:  50, ramp:  7 },
+    { label: 'Slow',      base: 30,  max: 100, ramp: 13 },
+    { label: 'Medium',    base: 55,  max: 170, ramp: 22 },
+    { label: 'Fast',      base: 90,  max: 260, ramp: 36 },
+    { label: 'Very Fast', base: 140, max: 400, ramp: 55 },
   ];
 
   function getScrollPreset() {
@@ -122,14 +91,10 @@
   });
   scrollBadgeEl.textContent = getScrollPreset().label;
 
-  /* ════════════════════════════════════════════════════════
-     ZOOM TOGGLE  (unchecked = off by default)
-  ════════════════════════════════════════════════════════ */
+  /* ── Zoom toggle ── */
   function zoomOn() { return zoomEnabledEl.checked; }
 
-  /* ════════════════════════════════════════════════════════
-     HELPERS
-  ════════════════════════════════════════════════════════ */
+  /* ── Helpers ── */
   function parseUrls(txt) {
     return txt.split(/[\n,]+/)
       .map(function (s) { return s.trim(); })
@@ -160,19 +125,7 @@
     bulkTally.innerHTML = '<b>' + n + '</b> URL' + (n !== 1 ? 's' : '');
   });
 
-  /* ════════════════════════════════════════════════════════
-     URL INDEX  (Ctrl+F support)
-     #urlIndex is position:absolute, opacity:0 — present in
-     DOM flow but invisible.  Browser find-in-page searches
-     ALL text nodes in the document, including hidden-by-opacity
-     elements, as long as they are NOT display:none/visibility:hidden.
-     We rebuild this list on every load/remove.
-  ════════════════════════════════════════════════════════ */
-  function rebuildUrlIndex() {
-    /* One text node per URL, newline-separated for readability */
-    urlIndex.textContent = allUrls.join('\n');
-    gCount.textContent = allUrls.length;
-  }
+  function refreshCount() { gCount.textContent = allUrls.length; }
 
   /* ════════════════════════════════════════════════════════
      VIRTUAL GALLERY ENGINE
@@ -183,18 +136,33 @@
   var observer  = null;
   var isLoading = false;
 
+  /* ── makeSlot ──
+     Each slot immediately contains a .url-label span with the URL
+     as plain text.  This is what Ctrl+F finds and scrolls to.
+     When the slot is activated, the full card replaces it.
+     When deactivated, the url-label is restored — so the URL
+     remains searchable and the scroll position stays correct.    */
   function makeSlot(i) {
     var slot = document.createElement('div');
     slot.className = 'vslot';
     slot.style.minHeight = currentMaxH;
     slot.dataset.idx = String(i);
+    slot.appendChild(makeUrlLabel(allUrls[i]));
     return slot;
+  }
+
+  function makeUrlLabel(url) {
+    var span = document.createElement('span');
+    span.className = 'url-label';
+    span.textContent = url;
+    return span;
   }
 
   function activateSlot(slot) {
     var i = parseInt(slot.dataset.idx, 10);
     if (activeSet.has(i) || i >= allUrls.length) return;
     activeSet.add(i);
+    /* Replace url-label with full card */
     slot.innerHTML = '';
     slot.appendChild(buildCard(i));
   }
@@ -206,7 +174,9 @@
     var box = slot.querySelector('.card-img-box');
     if (box && box._destroy) box._destroy();
     slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
+    /* Restore url-label so URL stays in DOM and findable */
     slot.innerHTML = '';
+    if (i < allUrls.length) slot.appendChild(makeUrlLabel(allUrls[i]));
   }
 
   function rebuildObserver() {
@@ -225,14 +195,11 @@
     gallery.querySelectorAll('img').forEach(function (img) { img.src = ''; });
     gallery.innerHTML = '';
     allUrls = []; slots = []; activeSet = new Set();
-    rebuildUrlIndex();
+    refreshCount();
   }
 
   /* ════════════════════════════════════════════════════════
      CARD FACTORY
-     Image box uses max-height (not fixed height) so the image
-     renders at natural aspect ratio with no black bars.
-     Zoom uses translate+scale with origin 0 0 (no jumps).
   ════════════════════════════════════════════════════════ */
   function buildCard(ci) {
     var url = allUrls[ci];
@@ -242,29 +209,25 @@
     card.className = 'card';
 
     /* header */
-    var hdr   = document.createElement('div');
+    var hdr    = document.createElement('div');
     hdr.className = 'card-header';
-    var numEl = document.createElement('span');
-    numEl.className = 'card-num';
-    numEl.textContent = 'Image ' + num;
+    var numEl  = document.createElement('span');
+    numEl.className = 'card-num'; numEl.textContent = 'Image ' + num;
     var dimsEl = document.createElement('span');
     dimsEl.className = 'card-dims';
-    hdr.appendChild(numEl);
-    hdr.appendChild(dimsEl);
+    hdr.appendChild(numEl); hdr.appendChild(dimsEl);
 
-    /* image box — NO fixed height, NO black background */
+    /* image box — no fixed height, no background */
     var box = document.createElement('div');
     box.className = 'card-img-box';
     box.style.maxHeight = currentMaxH;
     box.style.overflow  = 'hidden';
 
-    /* spinner (absolutely positioned, doesn't push box height) */
     var spin = document.createElement('div');
     spin.className = 'card-spinner';
     spin.innerHTML = '<div class="spinner"></div>';
     box.appendChild(spin);
 
-    /* image — width:100%, height:auto = natural ratio */
     var img = document.createElement('img');
     img.className = 'card-img';
     img.alt = 'Image ' + num;
@@ -274,16 +237,12 @@
 
     img.addEventListener('load', function () {
       spin.remove();
-      if (img.naturalWidth) {
-        dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
-      }
+      if (img.naturalWidth) dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
     });
     img.addEventListener('error', function () {
       spin.remove();
-      box.innerHTML =
-        '<div class="card-err">\u26a0 Could not load image' +
-        '<small style="opacity:.4;word-break:break-all;display:block;margin-top:3px;">' +
-        url + '</small></div>';
+      box.innerHTML = '<div class="card-err">\u26a0 Could not load image' +
+        '<small style="opacity:.4;word-break:break-all;display:block;margin-top:3px;">' + url + '</small></div>';
     });
 
     img.src = url;
@@ -309,15 +268,14 @@
     function clamp(ns, ntx, nty) {
       var bw = box.offsetWidth, bh = box.offsetHeight;
       return {
-        tx: Math.min(0, Math.max(bw  - bw  * ns, ntx)),
-        ty: Math.min(0, Math.max(bh  - bh  * ns, nty))
+        tx: Math.min(0, Math.max(bw - bw * ns, ntx)),
+        ty: Math.min(0, Math.max(bh - bh * ns, nty))
       };
     }
 
     function applyTf(animate) {
       img.style.transition = animate
-        ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)'
-        : 'none';
+        ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
       img.style.transform =
         'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
         ' scale(' + s.toFixed(4) + ')';
@@ -331,9 +289,9 @@
     }
 
     function setCursor() {
-      if (!zoomOn())    { box.style.cursor = 'default';   return; }
-      if (s <= 1.02)    { box.style.cursor = 'zoom-in';   return; }
-      if (dragging)     { box.style.cursor = 'grabbing';  return; }
+      if (!zoomOn())   { box.style.cursor = 'default';  return; }
+      if (s <= 1.02)   { box.style.cursor = 'zoom-in';  return; }
+      if (dragging)    { box.style.cursor = 'grabbing'; return; }
       box.style.cursor = 'grab';
     }
 
@@ -343,18 +301,15 @@
       applyTf(true); syncBadge(); setCursor();
     }
 
-    /* wheel zoom — only intercepts when zoom is on */
     box.addEventListener('wheel', function (e) {
       if (!zoomOn()) return;
       var r = box.getBoundingClientRect();
       var cx = e.clientX - r.left, cy = e.clientY - r.top;
       if (cx < 0 || cy < 0 || cx > r.width || cy > r.height) return;
       e.preventDefault(); e.stopPropagation();
-
       var factor = e.deltaY < 0 ? Z_FACTOR : 1 / Z_FACTOR;
       var ns = Math.min(Z_MAX, Math.max(Z_MIN, s * factor));
       if (ns === s) return;
-
       var c = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
       s = ns; tx = c.tx; ty = c.ty;
       applyTf(false); syncBadge(); setCursor();
@@ -362,9 +317,7 @@
       if (s <= Z_MIN + 0.02) resetZoom();
     }, { passive: false });
 
-    box.addEventListener('mouseenter', function () {
-      inside = true; clearTimeout(resetTid); setCursor();
-    });
+    box.addEventListener('mouseenter', function () { inside = true; clearTimeout(resetTid); setCursor(); });
     box.addEventListener('mouseleave', function () {
       inside = false;
       if (!dragging && s > Z_MIN + 0.02) resetTid = setTimeout(resetZoom, 700);
@@ -387,9 +340,7 @@
       var c = clamp(s, dragTx0 + dx, dragTy0 + dy);
       tx = c.tx; ty = c.ty;
       img.style.transition = 'none';
-      img.style.transform =
-        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-        ' scale(' + s.toFixed(4) + ')';
+      img.style.transform = 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
     }
 
     function onUp() {
@@ -399,11 +350,11 @@
     }
 
     document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup',   onUp);
+    document.addEventListener('mouseup', onUp);
 
     box.addEventListener('dblclick', function (e) {
       if (!zoomOn() || dragMoved) return;
-      var r  = box.getBoundingClientRect();
+      var r = box.getBoundingClientRect();
       var cx = e.clientX - r.left, cy = e.clientY - r.top;
       if (s > 1.05) {
         resetZoom();
@@ -415,7 +366,6 @@
       }
     });
 
-    /* expose for space-pan */
     box._zoom = {
       get s()  { return s;  }, set s(v)  { s  = v; },
       get tx() { return tx; }, set tx(v) { tx = v; },
@@ -423,27 +373,24 @@
       clamp: clamp,
       rawApply: function () {
         img.style.transition = 'none';
-        img.style.transform =
-          'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-          ' scale(' + s.toFixed(4) + ')';
+        img.style.transform = 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
       },
       setCursor: setCursor
     };
 
     box._destroy = function () {
       document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup',   onUp);
+      document.removeEventListener('mouseup', onUp);
     };
 
     setCursor();
 
-    /* URL row — text in DOM for Ctrl+F on the card itself */
+    /* URL row (also in card for visible display) */
     var urlRow = document.createElement('div');
     urlRow.className = 'card-url-row';
     var urlTxt = document.createElement('span');
     urlTxt.className = 'card-url-text';
-    urlTxt.title = url;
-    urlTxt.textContent = url;
+    urlTxt.title = url; urlTxt.textContent = url;
     urlRow.appendChild(urlTxt);
 
     /* toolbar */
@@ -459,15 +406,12 @@
         : Promise.resolve().then(function () {
             var t = document.createElement('textarea');
             t.value = url; t.style.cssText = 'position:fixed;opacity:0';
-            document.body.appendChild(t); t.select();
-            document.execCommand('copy'); t.remove();
+            document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
           });
       p.then(function () {
         copyBtn.textContent = 'Copied!'; copyBtn.classList.add('ok');
         clearTimeout(cpTid);
-        cpTid = setTimeout(function () {
-          copyBtn.textContent = 'Copy Link'; copyBtn.classList.remove('ok');
-        }, 1500);
+        cpTid = setTimeout(function () { copyBtn.textContent = 'Copy Link'; copyBtn.classList.remove('ok'); }, 1500);
       });
     });
 
@@ -483,20 +427,16 @@
         var n = slots[j].querySelector('.card-num');
         if (n) n.textContent = 'Image ' + (j + 1);
       }
-      rebuildUrlIndex();
       card.classList.add('out');
       setTimeout(function () {
         if (observer) observer.unobserve(slot);
-        slot.remove();
+        slot.remove(); refreshCount();
       }, 230);
     });
 
-    toolbar.appendChild(copyBtn);
-    toolbar.appendChild(removeBtn);
-    card.appendChild(hdr);
-    card.appendChild(box);
-    card.appendChild(urlRow);
-    card.appendChild(toolbar);
+    toolbar.appendChild(copyBtn); toolbar.appendChild(removeBtn);
+    card.appendChild(hdr); card.appendChild(box);
+    card.appendChild(urlRow); card.appendChild(toolbar);
     return card;
   }
 
@@ -506,12 +446,11 @@
   var gState = {
     spaceHeld: false, hoveredBox: null,
     spacePanBox: null, spaceDrag: false,
-    spaceStartX: 0, spaceStartY: 0,
-    spaceTx0: 0, spaceTy0: 0
+    spaceStartX: 0, spaceStartY: 0, spaceTx0: 0, spaceTy0: 0
   };
 
   document.addEventListener('mouseover', function (e) {
-    gState.hoveredBox = e.target.closest ? e.target.closest('.card-img-box') : null;
+    gState.hoveredBox = (e.target.closest ? e.target.closest('.card-img-box') : null) || null;
   }, { passive: true });
 
   var scrollVel = 0, scrollDir = 0, scrollRafId = null;
@@ -532,12 +471,9 @@
     scrollRafId = requestAnimationFrame(scrollTick);
   }
 
-  function stopScroll() {
-    cancelAnimationFrame(scrollRafId); scrollDir = 0; scrollVel = 0;
-  }
+  function stopScroll() { cancelAnimationFrame(scrollRafId); scrollDir = 0; scrollVel = 0; }
 
   document.addEventListener('keydown', function (e) {
-    /* Space — always block default, never scroll page */
     if (e.code === 'Space') {
       e.preventDefault();
       if (gState.spaceHeld) return;
@@ -561,8 +497,7 @@
     if (e.code === 'Space') {
       gState.spaceHeld = false; gState.spaceDrag = false;
       if (gState.spacePanBox && gState.spacePanBox._zoom) gState.spacePanBox._zoom.setCursor();
-      gState.spacePanBox = null;
-      return;
+      gState.spacePanBox = null; return;
     }
     var k = e.key.toLowerCase();
     delete heldKeys[k];
@@ -574,9 +509,9 @@
     var box = gState.spacePanBox;
     if (!box || !box._zoom || box._zoom.s <= 1.02) return;
     e.preventDefault(); e.stopPropagation();
-    gState.spaceDrag   = true;
+    gState.spaceDrag = true;
     gState.spaceStartX = e.clientX; gState.spaceStartY = e.clientY;
-    gState.spaceTx0    = box._zoom.tx; gState.spaceTy0 = box._zoom.ty;
+    gState.spaceTx0 = box._zoom.tx; gState.spaceTy0 = box._zoom.ty;
     box.style.cursor = 'grabbing';
   }, { capture: true });
 
@@ -618,7 +553,6 @@
 
     var startIdx = allUrls.length;
     allUrls = allUrls.concat(urls);
-    rebuildUrlIndex();   /* URLs immediately searchable via Ctrl+F */
 
     progWrap.classList.remove('hide');
     progFill.style.width = '0%';
@@ -637,7 +571,7 @@
         frag = document.createDocumentFragment();
         progFill.style.width = Math.round(((i + 1) / urls.length) * 100) + '%';
         progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed…';
-
+        refreshCount();
         await new Promise(function (r) {
           requestAnimationFrame(function () { requestAnimationFrame(r); });
         });
@@ -665,9 +599,6 @@
 
   clearAllBtn.addEventListener('click', clearGallery);
 
-  /* ════════════════════════════════════════════════════════
-     BACK TO TOP
-  ════════════════════════════════════════════════════════ */
   window.addEventListener('scroll', function () {
     btt.classList.toggle('show', window.scrollY > 280);
   }, { passive: true });
@@ -676,6 +607,6 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  rebuildUrlIndex();
+  refreshCount();
 
 })();

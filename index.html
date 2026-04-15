@@ -9,93 +9,71 @@
 </head>
 <body>
 
-<!--
-  STICKY CONTROL BAR — fixed at top, always visible.
-  Two rows:
-    Row 1 (topbar):  logo · image-size · scroll-speed · zoom toggle
-    Row 2 (inputbar): URL textarea · tally · append · clear · load
-  The gallery toolbar (count + clear-all) is also sticky, just below.
--->
+<!-- ═══ STICKY TOPBAR (controls only — always visible) ═══ -->
+<div id="topbar">
 
-<div id="stickyShell">
-
-  <!-- ── Row 1: Settings ── -->
-  <div id="topbar">
-
-    <div class="logo">
-      <div class="logo-icon">
-        <img src="batman-logo.png" alt="Batman">
-      </div>
-      <span class="logo-text">Bat-Viewer</span>
+  <div class="logo">
+    <div class="logo-icon">
+      <img src="batman-logo.png" alt="Batman">
     </div>
+    <span class="logo-text">Bat-Viewer</span>
+  </div>
 
-    <div class="ctrl-group">
-      <span class="ctrl-label">Image Size</span>
-      <input type="range" class="ctrl-slider" id="sizer" min="1" max="10" value="3" step="1">
-      <span class="ctrl-badge" id="sizeBadge">Medium</span>
-    </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">Image Size</span>
+    <input type="range" class="ctrl-slider" id="sizer" min="1" max="10" value="3" step="1">
+    <span class="ctrl-badge" id="sizeBadge">Medium</span>
+  </div>
 
-    <div class="ctrl-group">
-      <span class="ctrl-label">Scroll Speed&thinsp;<small>(W/S)</small></span>
-      <input type="range" class="ctrl-slider" id="scrollSpeed" min="1" max="5" value="2" step="1">
-      <span class="ctrl-badge" id="scrollBadge">Slow</span>
-    </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">Scroll Speed&thinsp;<small>(W/S)</small></span>
+    <input type="range" class="ctrl-slider" id="scrollSpeed" min="1" max="5" value="2" step="1">
+    <span class="ctrl-badge" id="scrollBadge">Slow</span>
+  </div>
 
-    <label class="ctrl-toggle" title="Enable / disable scroll-to-zoom">
-      <input type="checkbox" id="zoomEnabled">
-      <span class="tog-track"><span class="tog-thumb"></span></span>
-      <span class="ctrl-label">Zoom</span>
-    </label>
+  <label class="ctrl-toggle" title="Enable / disable scroll-to-zoom">
+    <input type="checkbox" id="zoomEnabled">
+    <span class="tog-track"><span class="tog-thumb"></span></span>
+    <span class="ctrl-label">Zoom</span>
+  </label>
 
-  </div><!-- /topbar -->
+</div><!-- /topbar -->
 
-  <!-- ── Row 2: URL input ── -->
+<!-- ═══ SCROLLABLE BODY ═══ -->
+<div id="pageBody">
+
+  <!-- URL input (scrolls with page) -->
   <div id="inputbar">
-
     <textarea id="bulkArea"
       placeholder="Paste image URLs — one per line or comma-separated (up to 1,000). New load replaces previous set."></textarea>
-
     <div id="inputControls">
       <span class="bulk-tally" id="bulkTally"><b>0</b> URLs</span>
-
       <label class="append-toggle">
         <input type="checkbox" id="appendMode">
         <span>Append</span>
       </label>
-
       <button class="btn btn-ghost" id="bulkClearBtn">Clear</button>
       <button class="btn btn-gold"  id="bulkLoadBtn">Load Images</button>
     </div>
-
     <div class="status hide" id="statusMsg"></div>
-
     <div class="prog-wrap hide" id="progWrap">
       <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
       <div class="prog-label" id="progLabel"></div>
     </div>
+  </div>
 
-  </div><!-- /inputbar -->
-
-  <!-- ── Gallery toolbar ── -->
+  <!-- Gallery toolbar (scrolls with page) -->
   <div id="gtoolbar">
     <span class="gstats"><b id="gCount">0</b> images loaded</span>
     <button class="btn btn-ghost" id="clearAllBtn">Clear All</button>
   </div>
 
-</div><!-- /stickyShell -->
+  <!-- Gallery grid -->
+  <div class="gallery-wrap">
+    <div id="gallery"></div>
+  </div>
 
-<!-- GALLERY -->
-<div class="gallery-wrap">
-  <!--
-    #urlIndex is a hidden but DOM-present index of all loaded URLs.
-    It is never displayed visually but its text nodes ARE present
-    in the document → browser Ctrl+F (find-in-page) finds them.
-    Updated every time images are loaded or removed.
-  -->
-  <div id="urlIndex" aria-hidden="true"></div>
-
-  <div id="gallery"></div>
-</div>
+</div><!-- /pageBody -->
 
 <button id="btt" aria-label="Back to top">&#8593;</button>
 
