@@ -282,27 +282,31 @@ body::before {
 .card-dims { font-size: 9px; color: rgba(255,255,255,0.30); font-variant-numeric: tabular-nums; }
 
 /* ── Image box ──
-   NO fixed height — image renders at natural aspect ratio.
-   max-height (set inline by JS) caps very tall images.
-   No background colour → no black bars.                       */
+   Renders at NATIVE pixel dimensions — zero scaling, zero distortion.
+   The box has a fixed height (set inline by JS from size slider).
+   The image is shown at 1:1 pixels via background-size:auto auto,
+   positioned at top-center, clipped by overflow:hidden.
+   Nothing is stretched or resampled — only cropping occurs.          */
 .card-img-box {
   width: 100%;
+  /* height set inline by JS */
   position: relative;
   overflow: hidden;
   flex-shrink: 0;
-  background: transparent;
+  background-color: #0a0a0f;
+  background-repeat: no-repeat;
+  background-position: top center;
+  background-size: auto auto;   /* native resolution — never scaled */
   cursor: default;
 }
 
-/* image fills card width, height is auto (natural ratio) */
+/* The <img> tag is hidden — we use it only to load the URL and
+   read naturalWidth/Height. The visual is driven by background-image
+   on the box so we get native-resolution clipping, not CSS scaling. */
 .card-img {
-  width: 100%;
-  height: auto;
-  display: block;
-  will-change: transform;
-  image-rendering: auto;
-  -webkit-user-drag: none;
-  user-select: none;
+  position: absolute;
+  width: 0; height: 0;
+  opacity: 0;
   pointer-events: none;
 }
 
@@ -311,7 +315,7 @@ body::before {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.30); z-index: 2;
-  min-height: 70px;
+  /* box has fixed height — no min-height needed */
 }
 .spinner {
   width: 22px; height: 22px;

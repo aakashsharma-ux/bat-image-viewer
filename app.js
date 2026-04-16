@@ -63,7 +63,7 @@
     gallery.style.gridTemplateColumns =
       p.cols === 1 ? '1fr' : 'repeat(' + p.cols + ',minmax(0,1fr))';
     gallery.querySelectorAll('.card-img-box').forEach(function (b) {
-      b.style.maxHeight = p.maxH;
+      b.style.height = p.maxH;
     });
     gallery.querySelectorAll('.vslot').forEach(function (s) {
       s.style.minHeight = p.maxH;
@@ -217,30 +217,39 @@
     dimsEl.className = 'card-dims';
     hdr.appendChild(numEl); hdr.appendChild(dimsEl);
 
-    /* image box — no fixed height, no background */
+    /* image box — fixed height from size preset, image renders at
+       native pixel size via background-image (no CSS scaling).     */
     var box = document.createElement('div');
     box.className = 'card-img-box';
-    box.style.maxHeight = currentMaxH;
-    box.style.overflow  = 'hidden';
+    box.style.height   = currentMaxH;
+    box.style.overflow = 'hidden';
 
     var spin = document.createElement('div');
     spin.className = 'card-spinner';
     spin.innerHTML = '<div class="spinner"></div>';
     box.appendChild(spin);
 
+    /* Hidden <img> used only for loading + naturalWidth/Height.
+       Visual rendering is done via background-image on the box —
+       this guarantees native-resolution display with no CSS scaling. */
     var img = document.createElement('img');
-    img.className = 'card-img';
-    img.alt = 'Image ' + num;
+    img.className = 'card-img';   /* position:absolute; opacity:0 in CSS */
+    img.alt = '';
     img.decoding = 'async';
     img.draggable = false;
-    img.style.transformOrigin = '0 0';
+    /* transform-origin still needed for zoom transforms on the box */
 
     img.addEventListener('load', function () {
       spin.remove();
-      if (img.naturalWidth) dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
+      /* Apply image as background at native size — zero scaling */
+      box.style.backgroundImage = 'url(' + JSON.stringify(url) + ')';
+      if (img.naturalWidth) {
+        dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
+      }
     });
     img.addEventListener('error', function () {
       spin.remove();
+      box.style.backgroundImage = 'none';
       box.innerHTML = '<div class="card-err">\u26a0 Could not load image' +
         '<small style="opacity:.4;word-break:break-all;display:block;margin-top:3px;">' + url + '</small></div>';
     });
@@ -258,7 +267,11 @@
     hint.textContent = 'Scroll\u2022zoom   Drag\u2022pan   Dbl-click\u2022toggle 2.5\u00d7';
     box.appendChild(hint);
 
-    /* ── zoom / drag state ── */
+    /* ── zoom / drag state ──
+       We zoom/pan by manipulating background-position + background-size
+       directly — this is the only way to transform a background-image.
+       s=1 means native size; at s=2 the image appears at 200% native pixels
+       (still sharp, just magnified). tx/ty shift the background origin.    */
     var Z_MIN = 1, Z_MAX = 5, Z_FACTOR = 1.13;
     var s = 1, tx = 0, ty = 0;
     var inside = false, dragging = false;
@@ -266,19 +279,24 @@
     var dragMoved = false, resetTid = null;
 
     function clamp(ns, ntx, nty) {
+      /* At scale ns the effective image size is naturalW*ns x naturalH*ns.
+         We clamp so the image always covers the box (no empty edges).       */
       var bw = box.offsetWidth, bh = box.offsetHeight;
+      var iw = (img.naturalWidth  || bw) * ns;
+      var ih = (img.naturalHeight || bh) * ns;
       return {
-        tx: Math.min(0, Math.max(bw - bw * ns, ntx)),
-        ty: Math.min(0, Math.max(bh - bh * ns, nty))
+        tx: iw  <= bw ? (bw - iw)  / 2 : Math.min(0, Math.max(bw - iw,  ntx)),
+        ty: ih  <= bh ? (bh - ih)  / 2 : Math.min(0, Math.max(bh - ih,  nty))
       };
     }
 
     function applyTf(animate) {
-      img.style.transition = animate
-        ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
-      img.style.transform =
-        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-        ' scale(' + s.toFixed(4) + ')';
+      /* background-image has no CSS transition for position+size together,
+         so we do an instant update; animate flag kept for API compat.       */
+      var iw = (img.naturalWidth  || box.offsetWidth)  * s;
+      var ih = (img.naturalHeight || box.offsetHeight) * s;
+      box.style.backgroundSize     = iw.toFixed(0) + 'px ' + ih.toFixed(0) + 'px';
+      box.style.backgroundPosition = tx.toFixed(0) + 'px ' + ty.toFixed(0) + 'px';
     }
 
     function syncBadge() {
@@ -297,8 +315,16 @@
 
     function resetZoom() {
       clearTimeout(resetTid);
-      s = 1; tx = 0; ty = 0;
-      applyTf(true); syncBadge(); setCursor();
+      s = 1;
+      /* Center image in box at native size */
+      var bw = box.offsetWidth, bh = box.offsetHeight;
+      var iw = img.naturalWidth  || bw;
+      var ih = img.naturalHeight || bh;
+      tx = iw <= bw ? (bw - iw) / 2 : 0;
+      ty = ih <= bh ? (bh - ih) / 2 : 0;
+      box.style.backgroundSize     = 'auto auto';   /* native */
+      box.style.backgroundPosition = tx.toFixed(0) + 'px ' + ty.toFixed(0) + 'px';
+      syncBadge(); setCursor();
     }
 
     box.addEventListener('wheel', function (e) {
@@ -339,8 +365,7 @@
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
       var c = clamp(s, dragTx0 + dx, dragTy0 + dy);
       tx = c.tx; ty = c.ty;
-      img.style.transition = 'none';
-      img.style.transform = 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
+      box.style.backgroundPosition = tx.toFixed(0) + 'px ' + ty.toFixed(0) + 'px';
     }
 
     function onUp() {
@@ -372,8 +397,10 @@
       get ty() { return ty; }, set ty(v) { ty = v; },
       clamp: clamp,
       rawApply: function () {
-        img.style.transition = 'none';
-        img.style.transform = 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
+        var iw = (img.naturalWidth  || box.offsetWidth)  * s;
+        var ih = (img.naturalHeight || box.offsetHeight) * s;
+        box.style.backgroundSize     = iw.toFixed(0) + 'px ' + ih.toFixed(0) + 'px';
+        box.style.backgroundPosition = tx.toFixed(0) + 'px ' + ty.toFixed(0) + 'px';
       },
       setCursor: setCursor
     };
