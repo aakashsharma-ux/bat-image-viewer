@@ -9,13 +9,10 @@
 </head>
 <body>
 
-<!-- ═══ STICKY TOPBAR (controls only — always visible) ═══ -->
+<!-- STICKY TOPBAR — controls only -->
 <div id="topbar">
-
   <div class="logo">
-    <div class="logo-icon">
-      <img src="batman-logo.png" alt="Batman">
-    </div>
+    <div class="logo-icon"><img src="batman-logo.png" alt="Batman"></div>
     <span class="logo-text">Bat-Viewer</span>
   </div>
 
@@ -26,34 +23,30 @@
   </div>
 
   <div class="ctrl-group">
-    <span class="ctrl-label">Scroll Speed&thinsp;<small>(W/S)</small></span>
+    <span class="ctrl-label">Scroll Speed <small>(W/S)</small></span>
     <input type="range" class="ctrl-slider" id="scrollSpeed" min="1" max="5" value="2" step="1">
     <span class="ctrl-badge" id="scrollBadge">Slow</span>
   </div>
 
-  <label class="ctrl-toggle" title="Enable / disable scroll-to-zoom">
+  <label class="ctrl-toggle" id="zoomToggleLabel" title="Toggle zoom (Z key)">
     <input type="checkbox" id="zoomEnabled">
     <span class="tog-track"><span class="tog-thumb"></span></span>
-    <span class="ctrl-label">Zoom</span>
+    <span class="ctrl-label">Zoom <small>(Press Z)</small></span>
   </label>
+</div>
 
-</div><!-- /topbar -->
-
-<!-- ═══ SCROLLABLE BODY ═══ -->
+<!-- SCROLLABLE PAGE -->
 <div id="pageBody">
 
-  <!-- URL input (scrolls with page) -->
   <div id="inputbar">
-    <textarea id="bulkArea"
-      placeholder="Paste image URLs — one per line or comma-separated (up to 1,000). New load replaces previous set."></textarea>
+    <textarea id="bulkArea" placeholder="Paste image URLs — one per line or comma-separated (up to 1,000). New load replaces previous set."></textarea>
     <div id="inputControls">
       <span class="bulk-tally" id="bulkTally"><b>0</b> URLs</span>
       <label class="append-toggle">
-        <input type="checkbox" id="appendMode">
-        <span>Append</span>
+        <input type="checkbox" id="appendMode"><span>Append</span>
       </label>
       <button class="btn btn-ghost" id="bulkClearBtn">Clear</button>
-      <button class="btn btn-gold"  id="bulkLoadBtn">Load Images</button>
+      <button class="btn btn-gold" id="bulkLoadBtn">Load Images</button>
     </div>
     <div class="status hide" id="statusMsg"></div>
     <div class="prog-wrap hide" id="progWrap">
@@ -62,18 +55,16 @@
     </div>
   </div>
 
-  <!-- Gallery toolbar (scrolls with page) -->
   <div id="gtoolbar">
     <span class="gstats"><b id="gCount">0</b> images loaded</span>
     <button class="btn btn-ghost" id="clearAllBtn">Clear All</button>
   </div>
 
-  <!-- Gallery grid -->
   <div class="gallery-wrap">
     <div id="gallery"></div>
   </div>
 
-</div><!-- /pageBody -->
+</div>
 
 <button id="btt" aria-label="Back to top">&#8593;</button>
 
