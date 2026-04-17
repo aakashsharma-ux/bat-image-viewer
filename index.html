@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="night">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,7 +9,7 @@
 </head>
 <body>
 
-<!-- STICKY TOPBAR — controls only -->
+<!-- STICKY TOPBAR — always visible, all controls here -->
 <div id="topbar">
   <div class="logo">
     <div class="logo-icon"><img src="batman-logo.png" alt="Batman"></div>
@@ -28,14 +28,21 @@
     <span class="ctrl-badge" id="scrollBadge">Slow</span>
   </div>
 
-  <label class="ctrl-toggle" id="zoomToggleLabel" title="Toggle zoom (Z key)">
+  <label class="ctrl-toggle" title="Toggle zoom (Z key)">
     <input type="checkbox" id="zoomEnabled">
     <span class="tog-track"><span class="tog-thumb"></span></span>
-    <span class="ctrl-label">Zoom <small>(Press Z)</small></span>
+    <span class="ctrl-label">Zoom <small>(Z)</small></span>
+  </label>
+
+  <!-- Theme toggle: Night (dark) ↔ Moon (light) -->
+  <label class="ctrl-toggle theme-toggle" id="themeToggleLabel" title="Toggle theme">
+    <input type="checkbox" id="themeToggle">
+    <span class="tog-track tog-theme"><span class="tog-thumb"></span></span>
+    <span class="ctrl-label" id="themeLabel">🌙 Night</span>
   </label>
 </div>
 
-<!-- SCROLLABLE PAGE -->
+<!-- SCROLLABLE PAGE BODY -->
 <div id="pageBody">
 
   <div id="inputbar">

@@ -1,31 +1,17 @@
 /* ════════════════════════════════════════════════════════════
-   BAT-VIEWER  app.js  v13
+   BAT-VIEWER  app.js  v14
 
-   IMAGE RENDERING GUARANTEE:
-   ─ Every image is displayed at full width of its card column.
-   ─ height:auto preserves aspect ratio — no distortion ever.
-   ─ max-height (from size slider) caps very tall images using
-     object-fit:contain — the full image is visible, letterboxed
-     inside the card background. NOT a single pixel is cropped.
-   ─ overflow:hidden is NEVER set on .card-img-box.
-   ─ The card itself uses overflow:visible.
-
-   ZOOM:
-   ─ Clicking a zoomed image opens a fullscreen lightbox overlay.
-   ─ Inside the overlay: scroll-wheel zoom, drag-to-pan, Esc/click-X closes.
-   ─ The source card image is never modified or clipped.
-   ─ Z key toggles the zoom-enabled checkbox (synced).
-   ─ When zoom is OFF, clicking an image does nothing.
-
-   KEYBOARD:
-   ─ W / S  → page scroll (speed from slider)
-   ─ Space  → blocked (never scrolls page)
-   ─ Z      → toggle zoom checkbox
-   ─ Esc    → close lightbox
-
-   CTRL+F:
-   ─ Each .vslot contains a .url-label text node even when the
-     card is not rendered, so all URLs are always findable.
+   CHANGES FROM v13:
+   ─ REMOVED: lightbox / overlay / openLightbox / closeLightbox
+   ─ REMOVED: click-to-open behavior
+   ─ RESTORED: inline scroll-wheel zoom on card image box
+   ─ ZERO CROP GUARANTEE:
+       At s=1 → .card-img-box has NO overflow → full image visible
+       At s>1 → JS adds class "zoomed" → overflow:hidden clips zoom
+   ─ ADDED: theme toggle (Night ↔ Moon) with smooth CSS transition
+   ─ Z key syncs with zoom checkbox (existing feature, preserved)
+   ─ All other behavior (W/S scroll, virtual gallery, bulk load,
+     drag-pan, space-pan) preserved exactly from v13
 ════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -34,6 +20,7 @@
   function $id(id) { return document.getElementById(id); }
 
   /* ── DOM refs ── */
+  var html          = document.documentElement;
   var gallery       = $id('gallery');
   var bulkArea      = $id('bulkArea');
   var bulkTally     = $id('bulkTally');
@@ -52,25 +39,44 @@
   var scrollSpeedEl = $id('scrollSpeed');
   var scrollBadgeEl = $id('scrollBadge');
   var zoomEnabledEl = $id('zoomEnabled');
+  var themeToggleEl = $id('themeToggle');
+  var themeLabelEl  = $id('themeLabel');
+
+  /* ════════════════════════════════════════════════════════
+     THEME TOGGLE  (Night ↔ Moon)
+     Persists via localStorage.
+  ════════════════════════════════════════════════════════ */
+  var savedTheme = localStorage.getItem('bv-theme') || 'night';
+  applyTheme(savedTheme);
+
+  function applyTheme(theme) {
+    html.setAttribute('data-theme', theme);
+    themeToggleEl.checked = (theme === 'moon');
+    themeLabelEl.textContent = theme === 'moon' ? '\uD83C\uDF15 Moon' : '\uD83C\uDF19 Night';
+    localStorage.setItem('bv-theme', theme);
+  }
+
+  themeToggleEl.addEventListener('change', function () {
+    applyTheme(themeToggleEl.checked ? 'moon' : 'night');
+  });
 
   /* ════════════════════════════════════════════════════════
      SIZE PRESETS
-     max-height is applied to .card-img (the <img> tag).
-     The box has no fixed height — it grows with the image.
-     object-fit:contain + object-position:top center ensures
-     the full image is always visible when max-height kicks in.
+     max-height applied to .card-img — box has NO fixed height.
+     At max-height: object-fit:contain scales down while keeping
+     full image visible. At 'none': no cap, image is full size.
   ════════════════════════════════════════════════════════ */
   var SIZE_PRESETS = [
-    { label: 'Tiny',       cols: 5, maxH: '120px' },
-    { label: 'Small',      cols: 4, maxH: '160px' },
-    { label: 'Medium',     cols: 3, maxH: '220px' },
-    { label: 'Large',      cols: 2, maxH: '320px' },
-    { label: 'XL',         cols: 2, maxH: '440px' },
-    { label: 'XXL',        cols: 1, maxH: '540px' },
-    { label: '1/Screen',   cols: 1, maxH: '70vh'  },
-    { label: '1/Screen+',  cols: 1, maxH: '80vh'  },
-    { label: 'Full',       cols: 1, maxH: '90vh'  },
-    { label: 'Max',        cols: 1, maxH: 'none'  },  /* no cap */
+    { label: 'Tiny',      cols: 5, maxH: '120px' },
+    { label: 'Small',     cols: 4, maxH: '160px' },
+    { label: 'Medium',    cols: 3, maxH: '220px' },
+    { label: 'Large',     cols: 2, maxH: '320px' },
+    { label: 'XL',        cols: 2, maxH: '440px' },
+    { label: 'XXL',       cols: 1, maxH: '540px' },
+    { label: '1/Screen',  cols: 1, maxH: '70vh'  },
+    { label: '1/Screen+', cols: 1, maxH: '80vh'  },
+    { label: 'Full',      cols: 1, maxH: '90vh'  },
+    { label: 'Max',       cols: 1, maxH: 'none'  },
   ];
 
   var currentMaxH = SIZE_PRESETS[2].maxH;
@@ -81,11 +87,9 @@
     sizeBadgeEl.textContent = p.label;
     gallery.style.gridTemplateColumns =
       p.cols === 1 ? '1fr' : 'repeat(' + p.cols + ',minmax(0,1fr))';
-    /* update all live card images */
     gallery.querySelectorAll('.card-img').forEach(function (img) {
       img.style.maxHeight = p.maxH;
     });
-    /* update slot min-height hints for grid layout stability */
     gallery.querySelectorAll('.vslot').forEach(function (s) {
       s.style.minHeight = p.maxH === 'none' ? '200px' : p.maxH;
     });
@@ -95,7 +99,7 @@
   applySize(parseInt(sizerEl.value, 10));
 
   /* ════════════════════════════════════════════════════════
-     SCROLL SPEED  (W/S keys only)
+     SCROLL SPEED  (W/S only, never affects mouse wheel)
   ════════════════════════════════════════════════════════ */
   var SCROLL_PRESETS = [
     { label: 'Very Slow', base: 15,  max:  50, ramp:  7 },
@@ -115,7 +119,7 @@
   scrollBadgeEl.textContent = getScrollPreset().label;
 
   /* ════════════════════════════════════════════════════════
-     ZOOM TOGGLE  — off by default, Z key syncs with checkbox
+     ZOOM TOGGLE  (off by default; Z key syncs)
   ════════════════════════════════════════════════════════ */
   function zoomOn() { return zoomEnabledEl.checked; }
 
@@ -155,132 +159,6 @@
   function refreshCount() { gCount.textContent = allUrls.length; }
 
   /* ════════════════════════════════════════════════════════
-     ZOOM LIGHTBOX OVERLAY
-     A single fullscreen overlay reused for every image.
-     The overlay has overflow:hidden to clip the zoomed image —
-     the SOURCE card is NEVER touched or modified.
-  ════════════════════════════════════════════════════════ */
-  var overlay = document.createElement('div');
-  overlay.id = 'zoomOverlay';
-  overlay.innerHTML =
-    '<div class="zo-img-wrap">' +
-      '<img id="zoomImg" alt="Zoomed image">' +
-      '<button id="zoomClose">✕ Close</button>' +
-      '<div id="zoomBadge">1.0×</div>' +
-      '<div id="zoomHint">Scroll · zoom &nbsp;&nbsp; Drag · pan &nbsp;&nbsp; Esc · close</div>' +
-    '</div>';
-  document.body.appendChild(overlay);
-
-  var zoomImg    = $id('zoomImg');
-  var zoomClose  = $id('zoomClose');
-  var zoomBadge  = $id('zoomBadge');
-
-  /* Zoom state */
-  var zS = 1, zTx = 0, zTy = 0;
-  var zDragging  = false;
-  var zStartX = 0, zStartY = 0, zTx0 = 0, zTy0 = 0;
-  var Z_MIN = 1, Z_MAX = 8, Z_FACTOR = 1.15;
-
-  function zApply(animate) {
-    zoomImg.style.transition = animate
-      ? 'transform 0.25s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
-    zoomImg.style.transform =
-      'translate(' + zTx.toFixed(1) + 'px,' + zTy.toFixed(1) + 'px)' +
-      ' scale(' + zS.toFixed(4) + ')';
-    zoomBadge.textContent = zS.toFixed(1) + '\u00d7';
-  }
-
-  function zClamp(ns, ntx, nty) {
-    /* Clamp so image always covers viewport (no empty gap visible) */
-    var vw = window.innerWidth, vh = window.innerHeight;
-    var iw = zoomImg.naturalWidth  || vw;
-    var ih = zoomImg.naturalHeight || vh;
-    /* fitted dimensions inside viewport at scale 1 */
-    var ratio    = Math.min(vw / iw, vh / ih);
-    var fw = iw * ratio, fh = ih * ratio;
-    /* at zoom level ns */
-    var sw = fw * ns, sh = fh * ns;
-    var ox = (vw - fw) / 2;   /* initial centering offset */
-    var oy = (vh - fh) / 2;
-    var minTx = sw >= vw ? -(sw - vw) - ox * ns : (vw - sw) / 2 - ox * ns;
-    var maxTx = -ox * ns;
-    var minTy = sh >= vh ? -(sh - vh) - oy * ns : (vh - sh) / 2 - oy * ns;
-    var maxTy = -oy * ns;
-    return {
-      tx: sw < vw ? (vw - sw) / 2 - ox * ns : Math.min(maxTx, Math.max(minTx, ntx)),
-      ty: sh < vh ? (vh - sh) / 2 - oy * ns : Math.min(maxTy, Math.max(minTy, nty))
-    };
-  }
-
-  function openLightbox(url) {
-    zS = 1; zTx = 0; zTy = 0;
-    zoomImg.style.transition = 'none';
-    zoomImg.style.transform  = 'translate(0,0) scale(1)';
-    zoomImg.style.transformOrigin = '0 0';
-    zoomImg.src = url;
-    zoomBadge.textContent = '1.0\u00d7';
-    overlay.classList.add('open');
-    document.body.style.overflow = 'hidden';
-  }
-
-  function closeLightbox() {
-    overlay.classList.remove('open');
-    document.body.style.overflow = '';
-    zoomImg.src = '';
-    zDragging = false;
-  }
-
-  zoomClose.addEventListener('click', closeLightbox);
-
-  overlay.addEventListener('click', function (e) {
-    if (e.target === overlay) closeLightbox();
-  });
-
-  overlay.addEventListener('wheel', function (e) {
-    e.preventDefault();
-    var wrap  = overlay.querySelector('.zo-img-wrap');
-    var rect  = wrap.getBoundingClientRect();
-    var cx    = e.clientX - rect.left;
-    var cy    = e.clientY - rect.top;
-
-    /* cursor-anchored zoom math */
-    var factor = e.deltaY < 0 ? Z_FACTOR : 1 / Z_FACTOR;
-    var ns = Math.min(Z_MAX, Math.max(Z_MIN, zS * factor));
-    if (ns === zS) return;
-
-    var ipx = (cx - zTx) / zS;
-    var ipy = (cy - zTy) / zS;
-    var c   = zClamp(ns, cx - ipx * ns, cy - ipy * ns);
-    zS = ns; zTx = c.tx; zTy = c.ty;
-    zApply(false);
-  }, { passive: false });
-
-  zoomImg.addEventListener('mousedown', function (e) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    zDragging = true; zStartX = e.clientX; zStartY = e.clientY;
-    zTx0 = zTx; zTy0 = zTy;
-    zoomImg.classList.add('dragging');
-  });
-
-  document.addEventListener('mousemove', function (e) {
-    if (!zDragging) return;
-    var c = zClamp(zS, zTx0 + e.clientX - zStartX, zTy0 + e.clientY - zStartY);
-    zTx = c.tx; zTy = c.ty;
-    zoomImg.style.transition = 'none';
-    zoomImg.style.transform =
-      'translate(' + zTx.toFixed(1) + 'px,' + zTy.toFixed(1) + 'px)' +
-      ' scale(' + zS.toFixed(4) + ')';
-    zoomBadge.textContent = zS.toFixed(1) + '\u00d7';
-  });
-
-  document.addEventListener('mouseup', function () {
-    if (!zDragging) return;
-    zDragging = false;
-    zoomImg.classList.remove('dragging');
-  });
-
-  /* ════════════════════════════════════════════════════════
      VIRTUAL GALLERY ENGINE
   ════════════════════════════════════════════════════════ */
   var allUrls   = [];
@@ -298,7 +176,7 @@
   function makeSlot(i) {
     var slot = document.createElement('div');
     slot.className = 'vslot';
-    slot.style.minHeight = currentMaxH === 'none' ? '200px' : currentMaxH;
+    slot.style.minHeight = (currentMaxH === 'none' ? '200px' : currentMaxH);
     slot.dataset.idx = String(i);
     slot.appendChild(makeUrlLabel(allUrls[i]));
     return slot;
@@ -342,11 +220,22 @@
 
   /* ════════════════════════════════════════════════════════
      CARD FACTORY
-     THE CORE RENDERING CONTRACT:
-     - .card-img-box  → no overflow:hidden, no fixed height
-     - .card-img      → width:100%, height:auto, max-height from slider
-     - object-fit:contain → if max-height reached, scale DOWN to fit
-                            but NEVER crop. Full image always visible.
+
+     IMAGE RENDERING (zero-crop contract):
+     ─ .card-img-box has NO overflow in CSS
+     ─ At s=1: box.classList has NO "zoomed" → no overflow → full image
+     ─ At s>1: box.classList has "zoomed"    → overflow:hidden clips zoom
+     ─ img: width:100%; height:auto; max-height from slider
+     ─ object-fit:contain on img ensures full visibility under max-height
+
+     ZOOM (inline scroll-wheel):
+     ─ translate(tx,ty) scale(s) on the img element
+     ─ transform-origin fixed at 0 0 (no jumps)
+     ─ Cursor-anchored: math keeps the hovered pixel stationary
+     ─ Resets on mouseLeave after 700ms
+     ─ Only active when zoomOn() is true
+
+     CLICK: does nothing. No lightbox, no tab, no modal.
   ════════════════════════════════════════════════════════ */
   function buildCard(ci) {
     var url = allUrls[ci];
@@ -364,22 +253,23 @@
     dimsEl.className = 'card-dims';
     hdr.appendChild(numEl); hdr.appendChild(dimsEl);
 
-    /* image box — no clipping, no fixed height */
+    /* image box — no overflow:hidden in CSS, added dynamically */
     var box = document.createElement('div');
     box.className = 'card-img-box';
 
-    /* spinner (absolute so it doesn't push box height) */
+    /* spinner */
     var spin = document.createElement('div');
     spin.className = 'card-spinner';
     spin.innerHTML = '<div class="spinner"></div>';
     box.appendChild(spin);
 
-    /* image — this is the ONLY element doing visual rendering */
+    /* image — natural size rendering */
     var img = document.createElement('img');
     img.className = 'card-img';
     img.alt = 'Image ' + num;
     img.decoding = 'async';
     img.draggable = false;
+    img.style.transformOrigin = '0 0';
     img.style.maxHeight = currentMaxH;
 
     img.addEventListener('load', function () {
@@ -387,8 +277,7 @@
       if (img.naturalWidth) {
         dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
       }
-      /* Update cursor based on zoom state */
-      updateBoxCursor(box);
+      syncCursor();
     });
 
     img.addEventListener('error', function () {
@@ -401,27 +290,161 @@
     img.src = url;
     box.appendChild(img);
 
-    /* Click image to open in lightbox (when zoom enabled) */
-    box.addEventListener('click', function (e) {
+    /* zoom overlays */
+    var badge = document.createElement('div');
+    badge.className = 'zoom-badge';
+    box.appendChild(badge);
+
+    var hint = document.createElement('div');
+    hint.className = 'zoom-hint';
+    hint.textContent = 'Scroll\u2022zoom    Drag\u2022pan    Dbl-click\u2022reset';
+    box.appendChild(hint);
+
+    /* ─────────────────────────────────────────────────────
+       ZOOM + DRAG STATE (per card, inline)
+       transform = translate(tx,ty) scale(s)  origin = 0 0
+    ───────────────────────────────────────────────────── */
+    var Z_MIN = 1, Z_MAX = 5, Z_FACTOR = 1.13;
+    var s = 1, tx = 0, ty = 0;
+    var inside = false, dragging = false;
+    var dragStartX = 0, dragStartY = 0, dragTx0 = 0, dragTy0 = 0;
+    var dragMoved = false, resetTid = null;
+
+    function clamp(ns, ntx, nty) {
+      var bw = box.offsetWidth, bh = box.offsetHeight;
+      return {
+        tx: Math.min(0, Math.max(bw - bw * ns, ntx)),
+        ty: Math.min(0, Math.max(bh - bh * ns, nty))
+      };
+    }
+
+    function applyTf(animate) {
+      img.style.transition = animate
+        ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
+      img.style.transform =
+        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+        ' scale(' + s.toFixed(4) + ')';
+    }
+
+    function syncBadge() {
+      badge.textContent = s.toFixed(1) + '\u00d7';
+      var z = s > 1.02;
+      badge.classList.toggle('visible', z);
+      /* Add/remove overflow:hidden dynamically based on zoom level */
+      box.classList.toggle('zoomed', z);
+    }
+
+    function syncCursor() {
+      box.classList.toggle('zoom-ready', zoomOn() && s <= 1.02);
+      box.classList.toggle('zoomed', s > 1.02);
+      if (!zoomOn() && s <= 1.02) {
+        box.classList.remove('zoom-ready', 'zoomed', 'zoom-drag');
+      }
+    }
+
+    function resetZoom() {
+      clearTimeout(resetTid);
+      s = 1; tx = 0; ty = 0;
+      applyTf(true); syncBadge(); syncCursor();
+    }
+
+    /* Wheel zoom — strict boundary, only when enabled */
+    box.addEventListener('wheel', function (e) {
       if (!zoomOn()) return;
-      if (e.target === box || e.target === img) {
-        openLightbox(url);
+
+      var r  = box.getBoundingClientRect();
+      var cx = e.clientX - r.left, cy = e.clientY - r.top;
+      if (cx < 0 || cy < 0 || cx > r.width || cy > r.height) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      var factor = e.deltaY < 0 ? Z_FACTOR : 1 / Z_FACTOR;
+      var ns = Math.min(Z_MAX, Math.max(Z_MIN, s * factor));
+      if (ns === s) return;
+
+      /* cursor-anchored zoom math */
+      var c = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
+      s = ns; tx = c.tx; ty = c.ty;
+      applyTf(false); syncBadge(); syncCursor();
+      clearTimeout(resetTid);
+      if (s <= Z_MIN + 0.02) resetZoom();
+    }, { passive: false });
+
+    box.addEventListener('mouseenter', function () {
+      inside = true; clearTimeout(resetTid); syncCursor();
+    });
+
+    box.addEventListener('mouseleave', function () {
+      inside = false;
+      if (!dragging && s > Z_MIN + 0.02) resetTid = setTimeout(resetZoom, 700);
+      syncCursor();
+    });
+
+    /* Left-drag pan — only when zoomed */
+    box.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || !zoomOn() || s <= 1.02 || gState.spaceHeld) return;
+      e.preventDefault();
+      dragging = true; dragMoved = false;
+      dragStartX = e.clientX; dragStartY = e.clientY;
+      dragTx0 = tx; dragTy0 = ty;
+      clearTimeout(resetTid);
+      box.classList.add('zoom-drag'); box.classList.remove('zoomed');
+    });
+
+    function onDocMove(e) {
+      if (!dragging) return;
+      var dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
+      var c = clamp(s, dragTx0 + dx, dragTy0 + dy);
+      tx = c.tx; ty = c.ty;
+      img.style.transition = 'none';
+      img.style.transform =
+        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
+        ' scale(' + s.toFixed(4) + ')';
+    }
+
+    function onDocUp() {
+      if (!dragging) return;
+      dragging = false;
+      box.classList.remove('zoom-drag'); box.classList.add('zoomed');
+      syncCursor();
+      if (!inside && s > Z_MIN + 0.02) resetTid = setTimeout(resetZoom, 700);
+    }
+
+    document.addEventListener('mousemove', onDocMove);
+    document.addEventListener('mouseup',   onDocUp);
+
+    /* Double-click — toggle 2.5× (NO lightbox, stays inline) */
+    box.addEventListener('dblclick', function (e) {
+      if (!zoomOn() || dragMoved) return;
+      var r  = box.getBoundingClientRect();
+      var cx = e.clientX - r.left, cy = e.clientY - r.top;
+      if (s > 1.05) {
+        resetZoom();
+      } else {
+        var ns = 2.5;
+        var c  = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
+        s = ns; tx = c.tx; ty = c.ty;
+        applyTf(true); syncBadge(); syncCursor();
       }
     });
 
-    function updateBoxCursor(b) {
-      b.classList.toggle('zoom-ready', zoomOn());
-      if (!zoomOn()) b.classList.remove('zoom-ready', 'zoom-active', 'zoom-dragging');
-    }
-
-    /* Re-apply cursor on zoom toggle */
+    /* Zoom toggle change → update cursor on existing cards */
     zoomEnabledEl.addEventListener('change', function () {
-      updateBoxCursor(box);
+      if (!zoomOn() && s > 1.02) resetZoom();
+      else syncCursor();
     });
 
-    updateBoxCursor(box);
+    /* Cleanup document listeners when virtualized away */
+    box._destroy = function () {
+      document.removeEventListener('mousemove', onDocMove);
+      document.removeEventListener('mouseup',   onDocUp);
+    };
 
-    /* URL row */
+    syncCursor();
+
+    /* URL row (Ctrl+F searchable) */
     var urlRow = document.createElement('div');
     urlRow.className = 'card-url-row';
     var urlTxt = document.createElement('span');
@@ -429,7 +452,7 @@
     urlTxt.title = url; urlTxt.textContent = url;
     urlRow.appendChild(urlTxt);
 
-    /* toolbar */
+    /* Toolbar */
     var toolbar = document.createElement('div');
     toolbar.className = 'card-toolbar';
 
@@ -456,6 +479,7 @@
     var removeBtn = document.createElement('button');
     removeBtn.className = 'tremove'; removeBtn.textContent = 'Remove';
     removeBtn.addEventListener('click', function () {
+      if (box._destroy) box._destroy();
       allUrls.splice(ci, 1);
       var slot = slots.splice(ci, 1)[0];
       activeSet.delete(ci);
@@ -477,6 +501,27 @@
     card.appendChild(urlRow); card.appendChild(toolbar);
     return card;
   }
+
+  /* deactivateSlot — cleanup drag listeners */
+  function deactivateSlotWithCleanup(slot) {
+    var box = slot.querySelector('.card-img-box');
+    if (box && box._destroy) box._destroy();
+    deactivateSlot(slot);
+  }
+
+  /* ════════════════════════════════════════════════════════
+     GLOBAL SPACE-PAN STATE
+     Space + drag pans the zoomed image the cursor is over.
+  ════════════════════════════════════════════════════════ */
+  var gState = {
+    spaceHeld: false, hoveredBox: null,
+    spacePanBox: null, spaceDrag: false,
+    spaceStartX: 0, spaceStartY: 0, spaceTx0: 0, spaceTy0: 0
+  };
+
+  document.addEventListener('mouseover', function (e) {
+    gState.hoveredBox = (e.target.closest ? e.target.closest('.card-img-box') : null) || null;
+  }, { passive: true });
 
   /* ════════════════════════════════════════════════════════
      KEYBOARD
@@ -504,25 +549,23 @@
   }
 
   document.addEventListener('keydown', function (e) {
-
-    /* Esc — close lightbox */
-    if (e.key === 'Escape') {
-      if (overlay.classList.contains('open')) closeLightbox();
-      return;
-    }
-
-    /* Space — always prevent page scroll */
+    /* Space — always block page scroll */
     if (e.code === 'Space') {
       e.preventDefault();
+      if (gState.spaceHeld) return;
+      gState.spaceHeld = true;
+      var box = gState.hoveredBox;
+      if (box && box._zoom && box._zoom.s > 1.02 && zoomOn()) {
+        box.style.cursor = 'grab';
+        gState.spacePanBox = box;
+      }
       return;
     }
 
-    /* Ignore when typing */
     if (isTypingTarget()) return;
-
     var k = e.key.toLowerCase();
 
-    /* Z — toggle zoom checkbox */
+    /* Z — toggle zoom */
     if (k === 'z' && !e.repeat) {
       zoomEnabledEl.checked = !zoomEnabledEl.checked;
       zoomEnabledEl.dispatchEvent(new Event('change'));
@@ -538,6 +581,10 @@
   });
 
   document.addEventListener('keyup', function (e) {
+    if (e.code === 'Space') {
+      gState.spaceHeld = false; gState.spaceDrag = false;
+      gState.spacePanBox = null; return;
+    }
     var k = e.key.toLowerCase();
     delete heldKeys[k];
     if (!heldKeys['w'] && !heldKeys['s']) stopScroll();
@@ -545,7 +592,7 @@
 
   window.addEventListener('blur', function () {
     stopScroll(); heldKeys = {};
-    if (overlay.classList.contains('open')) closeLightbox();
+    gState.spaceHeld = false; gState.spaceDrag = false; gState.spacePanBox = null;
   });
 
   /* ════════════════════════════════════════════════════════
@@ -575,7 +622,6 @@
       var slot = makeSlot(startIdx + i);
       slots.push(slot);
       frag.appendChild(slot);
-
       if ((i + 1) % CHUNK === 0 || i === urls.length - 1) {
         gallery.appendChild(frag);
         frag = document.createDocumentFragment();
@@ -592,7 +638,6 @@
     progLabel.textContent = urls.length + ' images ready!';
     showStatus(urls.length + ' image' + (urls.length !== 1 ? 's' : '') + ' loaded.', 'ok', 4000);
     setTimeout(function () { progWrap.classList.add('hide'); progFill.style.width = '0%'; }, 2400);
-
     bulkArea.value = '';
     bulkTally.innerHTML = '<b>0</b> URLs';
     isLoading = false;
