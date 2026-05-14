@@ -35,55 +35,7 @@ bat-viewer/
 
 ---
 
-## How to Host on GitHub Pages
 
-### 1. Create a GitHub repository
-
-1. Go to [github.com](https://github.com) and sign in
-2. Click **New repository**
-3. Name it `bat-viewer` (or anything you like)
-4. Set visibility to **Public**
-5. Click **Create repository**
-
-### 2. Upload the files
-
-**Option A — GitHub web interface (easiest):**
-1. Open your new repository
-2. Click **Add file → Upload files**
-3. Drag and drop ALL 5 files:
-   - `index.html`
-   - `style.css`
-   - `app.js`
-   - `batman-logo.png`
-   - `background.png`
-4. Click **Commit changes**
-
-**Option B — Git CLI:**
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git remote add origin https://github.com/<your-username>/bat-viewer.git
-git push -u origin main
-```
-
-### 3. Enable GitHub Pages
-
-1. Go to your repository → **Settings**
-2. Scroll to **Pages** (left sidebar)
-3. Under **Source**, select **Deploy from a branch**
-4. Choose branch: **main**, folder: **/ (root)**
-5. Click **Save**
-
-### 4. Access your site
-
-After ~60 seconds your site will be live at:
-```
-https://<your-username>.github.io/bat-viewer
-```
-
----
 
 ## Local Development
 
