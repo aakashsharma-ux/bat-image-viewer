@@ -2,7 +2,7 @@
 
 A Batman-themed image gallery viewer. Paste up to 1,000 image URLs, view them in a responsive grid, and adjust image size dynamically — all in the browser with no backend.
 
-**Live demo:** `https://<your-username>.github.io/bat-viewer`
+**Live demo:** `https://aakashsharma-ux.github.io/bat-image-viewer/`
 
 ---
 
