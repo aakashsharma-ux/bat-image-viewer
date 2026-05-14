@@ -9,7 +9,7 @@
 </head>
 <body>
 
-<!-- STICKY TOPBAR — always visible, all controls here -->
+<!-- STICKY TOPBAR -->
 <div id="topbar">
   <div class="logo">
     <div class="logo-icon"><img src="batman-logo.png" alt="Batman"></div>
@@ -17,13 +17,13 @@
   </div>
 
   <div class="ctrl-group">
-    <span class="ctrl-label">Image Size</span>
+    <span class="ctrl-label">Image Size <small>(+/-)</small></span>
     <input type="range" class="ctrl-slider" id="sizer" min="1" max="10" value="3" step="1">
     <span class="ctrl-badge" id="sizeBadge">Medium</span>
   </div>
 
   <div class="ctrl-group">
-    <span class="ctrl-label">Scroll Speed <small>(W/S)</small></span>
+    <span class="ctrl-label">Scroll Speed <small>(W/S/Arrows)</small></span>
     <input type="range" class="ctrl-slider" id="scrollSpeed" min="1" max="5" value="2" step="1">
     <span class="ctrl-badge" id="scrollBadge">Slow</span>
   </div>
@@ -34,12 +34,76 @@
     <span class="ctrl-label">Zoom <small>(Z)</small></span>
   </label>
 
-  <!-- Theme toggle: Night (dark) ↔ Moon (light) -->
   <label class="ctrl-toggle theme-toggle" id="themeToggleLabel" title="Toggle theme">
     <input type="checkbox" id="themeToggle">
     <span class="tog-track tog-theme"><span class="tog-thumb"></span></span>
     <span class="ctrl-label" id="themeLabel">🌙 Night</span>
   </label>
+
+  <button class="btn-help" id="helpBtn" title="Keyboard Shortcuts">⌨</button>
+  <div class="help-tooltip" id="helpTooltip">
+    <div class="help-row"><kbd>W</kbd><kbd>S</kbd> or <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> <span>Scroll</span></div>
+    <div class="help-row"><kbd>Z</kbd> <span>Toggle Zoom</span></div>
+    <div class="help-row"><kbd>+</kbd><kbd>-</kbd> <span>Image Size</span></div>
+    <div class="help-row"><kbd>F</kbd> <span>Fullscreen</span></div>
+    <div class="help-divider">In Edit Mode</div>
+    <div class="help-row"><kbd>Esc</kbd> <span>Exit Edit</span></div>
+    <div class="help-row"><kbd>Ctrl</kbd><kbd>R</kbd> <span>Reset Edits</span></div>
+  </div>
+</div>
+
+<!-- EDIT PANEL — hidden by default, lazy-activated -->
+<div id="editPanel" class="edit-panel" aria-hidden="true">
+  <div class="ep-header">
+    <div class="ep-title">
+      <span class="ep-icon">✎</span>
+      <span>Edit Mode</span>
+    </div>
+    <button class="ep-close" id="epClose" title="Exit Edit Mode (Esc)">✕</button>
+  </div>
+
+  <div class="ep-body">
+    <div class="ep-section-label">Adjustments</div>
+
+    <div class="ep-control">
+      <div class="ep-ctrl-header">
+        <span class="ep-ctrl-name">Brightness</span>
+        <span class="ep-ctrl-val" id="epBrightnessVal">100%</span>
+      </div>
+      <input type="range" class="ep-slider" id="epBrightness" min="0" max="200" value="100" step="1">
+    </div>
+
+    <div class="ep-control">
+      <div class="ep-ctrl-header">
+        <span class="ep-ctrl-name">Contrast</span>
+        <span class="ep-ctrl-val" id="epContrastVal">100%</span>
+      </div>
+      <input type="range" class="ep-slider" id="epContrast" min="0" max="200" value="100" step="1">
+    </div>
+
+    <div class="ep-section-label ep-section-gap">Transform</div>
+
+    <div class="ep-rotate-row">
+      <button class="ep-rot-btn" id="epRotCCW" title="Rotate 90° counter-clockwise">↺ 90°</button>
+      <button class="ep-rot-btn" id="epRotCW"  title="Rotate 90° clockwise">↻ 90°</button>
+    </div>
+
+    <div class="ep-control">
+      <div class="ep-ctrl-header">
+        <span class="ep-ctrl-name">Free Rotate</span>
+        <span class="ep-ctrl-val" id="epRotateVal">0°</span>
+      </div>
+      <input type="range" class="ep-slider" id="epRotate" min="-180" max="180" value="0" step="1">
+    </div>
+
+    <div class="ep-actions">
+      <button class="ep-btn ep-btn-ghost" id="epReset" title="Ctrl+R">Reset</button>
+      <button class="ep-btn ep-btn-cancel" id="epCancel">Cancel</button>
+      <button class="ep-btn ep-btn-done" id="epDone">Done ✓</button>
+    </div>
+
+    <div class="ep-hint">Changes apply to this session only.<br>Exit edit mode to resume normal viewing.</div>
+  </div>
 </div>
 
 <!-- SCROLLABLE PAGE BODY -->

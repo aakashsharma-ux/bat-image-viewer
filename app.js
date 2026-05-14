@@ -1,17 +1,25 @@
 /* ════════════════════════════════════════════════════════════
-   BAT-VIEWER  app.js  v14
+   BAT-VIEWER  app.js  v15
 
-   CHANGES FROM v13:
-   ─ REMOVED: lightbox / overlay / openLightbox / closeLightbox
-   ─ REMOVED: click-to-open behavior
-   ─ RESTORED: inline scroll-wheel zoom on card image box
-   ─ ZERO CROP GUARANTEE:
-       At s=1 → .card-img-box has NO overflow → full image visible
-       At s>1 → JS adds class "zoomed" → overflow:hidden clips zoom
-   ─ ADDED: theme toggle (Night ↔ Moon) with smooth CSS transition
-   ─ Z key syncs with zoom checkbox (existing feature, preserved)
-   ─ All other behavior (W/S scroll, virtual gallery, bulk load,
-     drag-pan, space-pan) preserved exactly from v13
+   CHANGES FROM v14:
+   ─ FIXED: Duplicate image rendering — activeSet now tracks slot
+     references (not indices) so re-index after removals can't
+     cause double-activation.
+   ─ FIXED: Remove handler reads live index from slot.dataset.idx
+     instead of closed-over ci (stale after prior removals).
+   ─ FIXED: Document mousemove/mouseup listeners now always cleaned
+     up on slot deactivation (plug the event-listener leak).
+   ─ FIXED: No card hover transform animation (was triggering GPU
+     compositing on every visible card simultaneously = lag at scale).
+   ─ ADDED: Edit Mode — lazy-loaded, isolated, zero view-mode cost.
+   ─ ADDED: img-rotate-wrap layer for clean rotation + zoom coexist.
+   ─ ADDED: editStates map — edit persists across virtualization.
+   ─ ADDED: Keyboard ← → ↑ ↓  scroll, +/- size, F fullscreen,
+             Esc exit-edit, Ctrl+R reset-edits.
+   ─ ADDED: Keyboard shortcut help tooltip (⌨ button).
+   ─ REMOVED: Drag-reorder (caused index desync + duplication bugs).
+   ─ PERF: rootMargin 300% for smoother preload on fast scroll.
+   ─ PERF: will-change:transform only on img (already in CSS).
 ════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -41,10 +49,11 @@
   var zoomEnabledEl = $id('zoomEnabled');
   var themeToggleEl = $id('themeToggle');
   var themeLabelEl  = $id('themeLabel');
+  var helpBtn       = $id('helpBtn');
+  var helpTooltip   = $id('helpTooltip');
 
   /* ════════════════════════════════════════════════════════
-     THEME TOGGLE  (Night ↔ Moon)
-     Persists via localStorage.
+     THEME
   ════════════════════════════════════════════════════════ */
   var savedTheme = localStorage.getItem('bv-theme') || 'night';
   applyTheme(savedTheme);
@@ -55,16 +64,25 @@
     themeLabelEl.textContent = theme === 'moon' ? '\uD83C\uDF15 Moon' : '\uD83C\uDF19 Night';
     localStorage.setItem('bv-theme', theme);
   }
-
   themeToggleEl.addEventListener('change', function () {
     applyTheme(themeToggleEl.checked ? 'moon' : 'night');
   });
 
   /* ════════════════════════════════════════════════════════
+     HELP TOOLTIP
+  ════════════════════════════════════════════════════════ */
+  var helpOpen = false;
+  helpBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    helpOpen = !helpOpen;
+    helpTooltip.classList.toggle('visible', helpOpen);
+  });
+  document.addEventListener('click', function () {
+    if (helpOpen) { helpOpen = false; helpTooltip.classList.remove('visible'); }
+  });
+
+  /* ════════════════════════════════════════════════════════
      SIZE PRESETS
-     max-height applied to .card-img — box has NO fixed height.
-     At max-height: object-fit:contain scales down while keeping
-     full image visible. At 'none': no cap, image is full size.
   ════════════════════════════════════════════════════════ */
   var SIZE_PRESETS = [
     { label: 'Tiny',      cols: 5, maxH: '120px' },
@@ -99,7 +117,7 @@
   applySize(parseInt(sizerEl.value, 10));
 
   /* ════════════════════════════════════════════════════════
-     SCROLL SPEED  (W/S only, never affects mouse wheel)
+     SCROLL SPEED
   ════════════════════════════════════════════════════════ */
   var SCROLL_PRESETS = [
     { label: 'Very Slow', base: 15,  max:  50, ramp:  7 },
@@ -112,14 +130,13 @@
   function getScrollPreset() {
     return SCROLL_PRESETS[Math.min(4, Math.max(0, parseInt(scrollSpeedEl.value, 10) - 1))];
   }
-
   scrollSpeedEl.addEventListener('input', function () {
     scrollBadgeEl.textContent = getScrollPreset().label;
   });
   scrollBadgeEl.textContent = getScrollPreset().label;
 
   /* ════════════════════════════════════════════════════════
-     ZOOM TOGGLE  (off by default; Z key syncs)
+     ZOOM TOGGLE
   ════════════════════════════════════════════════════════ */
   function zoomOn() { return zoomEnabledEl.checked; }
 
@@ -134,8 +151,10 @@
   }
 
   function isUrl(s) {
-    try { var u = new URL(s); return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'data:'; }
-    catch (e) { return false; }
+    try {
+      var u = new URL(s);
+      return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'data:';
+    } catch (e) { return false; }
   }
 
   function isTypingTarget() {
@@ -159,17 +178,213 @@
   function refreshCount() { gCount.textContent = allUrls.length; }
 
   /* ════════════════════════════════════════════════════════
+     EDIT STATE PERSISTENCE
+     Keyed by URL so states survive virtualization cycles.
+     A card scrolled off-screen is destroyed and recreated;
+     on recreation it reads from this map and re-applies.
+  ════════════════════════════════════════════════════════ */
+  var editStates = Object.create(null);
+
+  function getEditState(url) {
+    return editStates[url]
+      ? { brightness: editStates[url].brightness, contrast: editStates[url].contrast, rotation: editStates[url].rotation }
+      : { brightness: 1, contrast: 1, rotation: 0 };
+  }
+
+  function saveEditState(url, state) {
+    if (state.brightness === 1 && state.contrast === 1 && state.rotation === 0) {
+      delete editStates[url];
+    } else {
+      editStates[url] = { brightness: state.brightness, contrast: state.contrast, rotation: state.rotation };
+    }
+  }
+
+  /* Apply a state object to a card's image and rotation wrapper */
+  function applyStateToCard(card, state) {
+    var img  = card.querySelector('.card-img');
+    var wrap = card.querySelector('.img-rotate-wrap');
+    if (!img || !wrap) return;
+    img.style.filter = (state.brightness !== 1 || state.contrast !== 1)
+      ? 'brightness(' + state.brightness + ') contrast(' + state.contrast + ')'
+      : '';
+    wrap.style.transform = state.rotation !== 0
+      ? 'rotate(' + state.rotation + 'deg)'
+      : '';
+  }
+
+  /* ════════════════════════════════════════════════════════
+     EDIT MODE  (IIFE singleton — lazy, isolated)
+
+     Lifecycle: enter(card, url) → user adjusts → exit(apply)
+     Heavy DOM refs are grabbed once on first use (ensurePanel).
+     The panel element exists in the DOM from page load but is
+     off-screen (transform:translateX(100%)) so it has zero
+     layout or paint cost in view mode.
+  ════════════════════════════════════════════════════════ */
+  var EditMode = (function () {
+    var panelEl       = null;
+    var activeCard    = null;
+    var activeUrl     = null;
+    var savedState    = null;    /* state on enter — restored on Cancel */
+    var liveState     = null;    /* current working state */
+
+    /* Panel control refs (grabbed on first use) */
+    var epBrightness, epContrast, epRotate;
+    var epBrightnessVal, epContrastVal, epRotateVal;
+    var ready = false;
+
+    /* Wire up panel controls exactly once */
+    function ensurePanel() {
+      if (ready) return;
+      ready = true;
+      panelEl        = $id('editPanel');
+      epBrightness   = $id('epBrightness');
+      epContrast     = $id('epContrast');
+      epRotate       = $id('epRotate');
+      epBrightnessVal = $id('epBrightnessVal');
+      epContrastVal   = $id('epContrastVal');
+      epRotateVal     = $id('epRotateVal');
+
+      epBrightness.addEventListener('input', function () {
+        liveState.brightness = epBrightness.value / 100;
+        epBrightnessVal.textContent = epBrightness.value + '%';
+        previewLive();
+      });
+
+      epContrast.addEventListener('input', function () {
+        liveState.contrast = epContrast.value / 100;
+        epContrastVal.textContent = epContrast.value + '%';
+        previewLive();
+      });
+
+      epRotate.addEventListener('input', function () {
+        liveState.rotation = parseInt(epRotate.value, 10);
+        epRotateVal.textContent = epRotate.value + '\u00b0';
+        previewLive();
+      });
+
+      $id('epRotCCW').addEventListener('click', function () {
+        liveState.rotation = normaliseAngle(liveState.rotation - 90);
+        syncRotSlider();
+        previewLive();
+      });
+
+      $id('epRotCW').addEventListener('click', function () {
+        liveState.rotation = normaliseAngle(liveState.rotation + 90);
+        syncRotSlider();
+        previewLive();
+      });
+
+      $id('epReset').addEventListener('click',  function () { resetLive(); });
+      $id('epCancel').addEventListener('click', function () { exit(false); });
+      $id('epDone').addEventListener('click',   function () { exit(true);  });
+      $id('epClose').addEventListener('click',  function () { exit(false); });
+    }
+
+    /* Clamp angle to -180..180 range for the slider */
+    function normaliseAngle(deg) {
+      while (deg >  180) deg -= 360;
+      while (deg < -180) deg += 360;
+      return deg;
+    }
+
+    function syncRotSlider() {
+      epRotate.value = liveState.rotation;
+      epRotateVal.textContent = liveState.rotation + '\u00b0';
+    }
+
+    function previewLive() {
+      if (activeCard) applyStateToCard(activeCard, liveState);
+    }
+
+    function resetLive() {
+      liveState = { brightness: 1, contrast: 1, rotation: 0 };
+      epBrightness.value  = 100; epBrightnessVal.textContent = '100%';
+      epContrast.value    = 100; epContrastVal.textContent   = '100%';
+      epRotate.value      = 0;   epRotateVal.textContent     = '0\u00b0';
+      previewLive();
+    }
+
+    function populatePanel(state) {
+      var b = Math.round(state.brightness * 100);
+      var c = Math.round(state.contrast   * 100);
+      var r = state.rotation;
+      epBrightness.value       = b;  epBrightnessVal.textContent = b + '%';
+      epContrast.value         = c;  epContrastVal.textContent   = c + '%';
+      epRotate.value           = r;  epRotateVal.textContent     = r + '\u00b0';
+    }
+
+    /* ── Public API ── */
+
+    function enter(card, url) {
+      if (activeCard === card) return;
+      if (activeCard) exit(false);       /* close any existing session */
+
+      ensurePanel();                     /* wire controls on first use */
+
+      activeCard = card;
+      activeUrl  = url;
+      savedState = getEditState(url);    /* snapshot for Cancel */
+      liveState  = { brightness: savedState.brightness, contrast: savedState.contrast, rotation: savedState.rotation };
+
+      populatePanel(liveState);
+
+      panelEl.classList.add('visible');
+      panelEl.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('edit-active');
+      card.classList.add('editing');
+    }
+
+    function exit(apply) {
+      if (!activeCard) return;
+
+      if (apply) {
+        saveEditState(activeUrl, liveState);
+        applyStateToCard(activeCard, liveState);
+      } else {
+        /* Cancel — restore the state from when we entered */
+        applyStateToCard(activeCard, savedState);
+      }
+
+      activeCard.classList.remove('editing');
+      document.body.classList.remove('edit-active');
+      panelEl.classList.remove('visible');
+      panelEl.setAttribute('aria-hidden', 'true');
+
+      activeCard = null;
+      activeUrl  = null;
+      savedState = null;
+      liveState  = null;
+    }
+
+    function resetActive() {
+      if (activeCard) resetLive();
+    }
+
+    function isActive() { return activeCard !== null; }
+
+    return { enter: enter, exit: exit, reset: resetActive, isActive: isActive };
+  })();
+
+  /* ════════════════════════════════════════════════════════
      VIRTUAL GALLERY ENGINE
+
+     FIX — activeSet now uses slot element references, not
+     integer indices. This means re-indexing after a remove
+     cannot accidentally mark a slot as "not active" when it
+     is, or vice-versa. The integer index stored in
+     slot.dataset.idx is only used to look up allUrls[i].
   ════════════════════════════════════════════════════════ */
   var allUrls   = [];
   var slots     = [];
-  var activeSet = new Set();
+  var activeSet = new Set();   /* Set<HTMLElement> — slot references */
   var observer  = null;
   var isLoading = false;
 
   function makeUrlLabel(url) {
     var s = document.createElement('span');
-    s.className = 'url-label'; s.textContent = url;
+    s.className = 'url-label';
+    s.textContent = url;
     return s;
   }
 
@@ -182,36 +397,46 @@
     return slot;
   }
 
+  /* Activate: build and insert a card into a slot */
   function activateSlot(slot) {
+    if (activeSet.has(slot)) return;           /* already active — no duplicate */
     var i = parseInt(slot.dataset.idx, 10);
-    if (activeSet.has(i) || i >= allUrls.length) return;
-    activeSet.add(i);
+    if (i >= allUrls.length) return;
+    activeSet.add(slot);
     slot.innerHTML = '';
     slot.appendChild(buildCard(i));
   }
 
+  /* Deactivate: tear down the card, free memory, clean listeners */
   function deactivateSlot(slot) {
-    var i = parseInt(slot.dataset.idx, 10);
-    if (!activeSet.has(i)) return;
-    activeSet.delete(i);
+    if (!activeSet.has(slot)) return;
+    activeSet.delete(slot);
+    /* Cleanup zoom drag listeners attached to document */
+    var box = slot.querySelector('.card-img-box');
+    if (box && box._destroy) box._destroy();
+    /* Release img src to free browser decode memory */
     slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
     slot.innerHTML = '';
+    var i = parseInt(slot.dataset.idx, 10);
     if (i < allUrls.length) slot.appendChild(makeUrlLabel(allUrls[i]));
   }
 
   function rebuildObserver() {
     if (observer) observer.disconnect();
+    /* rootMargin 300%: preload 3 screens worth above and below viewport.
+       This makes fast scrolling feel instant for most setups. */
     observer = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
         if (e.isIntersecting) activateSlot(e.target);
-        else deactivateSlot(e.target);
+        else                  deactivateSlot(e.target);
       });
-    }, { root: null, rootMargin: '200% 0px 200% 0px', threshold: 0 });
+    }, { root: null, rootMargin: '300% 0px 300% 0px', threshold: 0 });
     slots.forEach(function (s) { observer.observe(s); });
   }
 
   function clearGallery() {
     if (observer) { observer.disconnect(); observer = null; }
+    if (EditMode.isActive()) EditMode.exit(false);
     gallery.querySelectorAll('img').forEach(function (img) { img.src = ''; });
     gallery.innerHTML = '';
     allUrls = []; slots = []; activeSet = new Set();
@@ -221,21 +446,17 @@
   /* ════════════════════════════════════════════════════════
      CARD FACTORY
 
-     IMAGE RENDERING (zero-crop contract):
-     ─ .card-img-box has NO overflow in CSS
-     ─ At s=1: box.classList has NO "zoomed" → no overflow → full image
-     ─ At s>1: box.classList has "zoomed"    → overflow:hidden clips zoom
-     ─ img: width:100%; height:auto; max-height from slider
-     ─ object-fit:contain on img ensures full visibility under max-height
-
-     ZOOM (inline scroll-wheel):
-     ─ translate(tx,ty) scale(s) on the img element
-     ─ transform-origin fixed at 0 0 (no jumps)
-     ─ Cursor-anchored: math keeps the hovered pixel stationary
-     ─ Resets on mouseLeave after 700ms
-     ─ Only active when zoomOn() is true
-
-     CLICK: does nothing. No lightbox, no tab, no modal.
+     Structure:
+       .card
+         .card-header
+         .card-img-box
+           .img-rotate-wrap   ← rotation applied here (CSS transform)
+             .card-img         ← zoom applied here (JS transform, will-change)
+           .zoom-badge
+           .zoom-hint
+         .card-url-row
+         .card-toolbar
+           [Copy Link] [Edit] [Remove]
   ════════════════════════════════════════════════════════ */
   function buildCard(ci) {
     var url = allUrls[ci];
@@ -244,26 +465,27 @@
     var card = document.createElement('div');
     card.className = 'card';
 
-    /* header */
-    var hdr    = document.createElement('div');
-    hdr.className = 'card-header';
-    var numEl  = document.createElement('span');
-    numEl.className = 'card-num'; numEl.textContent = 'Image ' + num;
-    var dimsEl = document.createElement('span');
-    dimsEl.className = 'card-dims';
+    /* ── Header ── */
+    var hdr   = document.createElement('div'); hdr.className = 'card-header';
+    var numEl = document.createElement('span'); numEl.className = 'card-num'; numEl.textContent = 'Image ' + num;
+    var dimsEl= document.createElement('span'); dimsEl.className = 'card-dims';
     hdr.appendChild(numEl); hdr.appendChild(dimsEl);
 
-    /* image box — no overflow:hidden in CSS, added dynamically */
+    /* ── Image box ── */
     var box = document.createElement('div');
     box.className = 'card-img-box';
 
-    /* spinner */
+    /* Spinner */
     var spin = document.createElement('div');
     spin.className = 'card-spinner';
     spin.innerHTML = '<div class="spinner"></div>';
     box.appendChild(spin);
 
-    /* image — natural size rendering */
+    /* Rotation wrapper — receives CSS rotate(); isolated from zoom */
+    var rotateWrap = document.createElement('div');
+    rotateWrap.className = 'img-rotate-wrap';
+
+    /* Image */
     var img = document.createElement('img');
     img.className = 'card-img';
     img.alt = 'Image ' + num;
@@ -272,11 +494,18 @@
     img.style.transformOrigin = '0 0';
     img.style.maxHeight = currentMaxH;
 
+    /* Re-apply stored edit state so it survives virtualization */
+    var storedEdit = getEditState(url);
+    if (storedEdit.brightness !== 1 || storedEdit.contrast !== 1) {
+      img.style.filter = 'brightness(' + storedEdit.brightness + ') contrast(' + storedEdit.contrast + ')';
+    }
+    if (storedEdit.rotation !== 0) {
+      rotateWrap.style.transform = 'rotate(' + storedEdit.rotation + 'deg)';
+    }
+
     img.addEventListener('load', function () {
       spin.remove();
-      if (img.naturalWidth) {
-        dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
-      }
+      if (img.naturalWidth) dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
       syncCursor();
     });
 
@@ -288,27 +517,29 @@
     });
 
     img.src = url;
-    box.appendChild(img);
+    rotateWrap.appendChild(img);
+    box.appendChild(rotateWrap);
 
-    /* zoom overlays */
-    var badge = document.createElement('div');
-    badge.className = 'zoom-badge';
-    box.appendChild(badge);
-
-    var hint = document.createElement('div');
-    hint.className = 'zoom-hint';
+    /* Zoom overlays */
+    var badge = document.createElement('div'); badge.className = 'zoom-badge';
+    var hint  = document.createElement('div'); hint.className  = 'zoom-hint';
     hint.textContent = 'Scroll\u2022zoom    Drag\u2022pan    Dbl-click\u2022reset';
+    box.appendChild(badge);
     box.appendChild(hint);
 
-    /* ─────────────────────────────────────────────────────
-       ZOOM + DRAG STATE (per card, inline)
+    /* ──────────────────────────────────────────────────────
+       ZOOM + DRAG (per-card closures)
        transform = translate(tx,ty) scale(s)  origin = 0 0
-    ───────────────────────────────────────────────────── */
+       Rotation is on the PARENT (rotateWrap), not here.
+       Both are GPU-composited; order is: rotate → translate/scale.
+    ─────────────────────────────────────────────────────── */
     var Z_MIN = 1, Z_MAX = 5, Z_FACTOR = 1.13;
     var s = 1, tx = 0, ty = 0;
     var inside = false, dragging = false;
     var dragStartX = 0, dragStartY = 0, dragTx0 = 0, dragTy0 = 0;
     var dragMoved = false, resetTid = null;
+
+    function isEditing() { return card.classList.contains('editing'); }
 
     function clamp(ns, ntx, nty) {
       var bw = box.offsetWidth, bh = box.offsetHeight;
@@ -319,9 +550,8 @@
     }
 
     function applyTf(animate) {
-      img.style.transition = animate
-        ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
-      img.style.transform =
+      img.style.transition = animate ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
+      img.style.transform  =
         'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
         ' scale(' + s.toFixed(4) + ')';
     }
@@ -330,40 +560,35 @@
       badge.textContent = s.toFixed(1) + '\u00d7';
       var z = s > 1.02;
       badge.classList.toggle('visible', z);
-      /* Add/remove overflow:hidden dynamically based on zoom level */
       box.classList.toggle('zoomed', z);
     }
 
     function syncCursor() {
-      box.classList.toggle('zoom-ready', zoomOn() && s <= 1.02);
-      box.classList.toggle('zoomed', s > 1.02);
-      if (!zoomOn() && s <= 1.02) {
+      if (isEditing()) {
         box.classList.remove('zoom-ready', 'zoomed', 'zoom-drag');
+        return;
       }
+      box.classList.toggle('zoom-ready', zoomOn() && s <= 1.02);
+      box.classList.toggle('zoomed',     s > 1.02);
+      if (!zoomOn() && s <= 1.02) box.classList.remove('zoom-ready', 'zoomed', 'zoom-drag');
     }
 
-    function resetZoom() {
+    function resetZoom(animate) {
       clearTimeout(resetTid);
       s = 1; tx = 0; ty = 0;
-      applyTf(true); syncBadge(); syncCursor();
+      applyTf(animate !== false); syncBadge(); syncCursor();
     }
 
-    /* Wheel zoom — strict boundary, only when enabled */
+    /* Scroll wheel zoom — blocked during edit mode */
     box.addEventListener('wheel', function (e) {
-      if (!zoomOn()) return;
-
+      if (!zoomOn() || isEditing()) return;
       var r  = box.getBoundingClientRect();
       var cx = e.clientX - r.left, cy = e.clientY - r.top;
       if (cx < 0 || cy < 0 || cx > r.width || cy > r.height) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-
+      e.preventDefault(); e.stopPropagation();
       var factor = e.deltaY < 0 ? Z_FACTOR : 1 / Z_FACTOR;
       var ns = Math.min(Z_MAX, Math.max(Z_MIN, s * factor));
       if (ns === s) return;
-
-      /* cursor-anchored zoom math */
       var c = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
       s = ns; tx = c.tx; ty = c.ty;
       applyTf(false); syncBadge(); syncCursor();
@@ -374,16 +599,15 @@
     box.addEventListener('mouseenter', function () {
       inside = true; clearTimeout(resetTid); syncCursor();
     });
-
     box.addEventListener('mouseleave', function () {
       inside = false;
       if (!dragging && s > Z_MIN + 0.02) resetTid = setTimeout(resetZoom, 700);
       syncCursor();
     });
 
-    /* Left-drag pan — only when zoomed */
+    /* Drag pan */
     box.addEventListener('mousedown', function (e) {
-      if (e.button !== 0 || !zoomOn() || s <= 1.02 || gState.spaceHeld) return;
+      if (e.button !== 0 || !zoomOn() || s <= 1.02 || gState.spaceHeld || isEditing()) return;
       e.preventDefault();
       dragging = true; dragMoved = false;
       dragStartX = e.clientX; dragStartY = e.clientY;
@@ -399,7 +623,7 @@
       var c = clamp(s, dragTx0 + dx, dragTy0 + dy);
       tx = c.tx; ty = c.ty;
       img.style.transition = 'none';
-      img.style.transform =
+      img.style.transform  =
         'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
         ' scale(' + s.toFixed(4) + ')';
     }
@@ -415,9 +639,9 @@
     document.addEventListener('mousemove', onDocMove);
     document.addEventListener('mouseup',   onDocUp);
 
-    /* Double-click — toggle 2.5× (NO lightbox, stays inline) */
+    /* Double-click: toggle 2.5× zoom */
     box.addEventListener('dblclick', function (e) {
-      if (!zoomOn() || dragMoved) return;
+      if (!zoomOn() || dragMoved || isEditing()) return;
       var r  = box.getBoundingClientRect();
       var cx = e.clientX - r.left, cy = e.clientY - r.top;
       if (s > 1.05) {
@@ -430,32 +654,32 @@
       }
     });
 
-    /* Zoom toggle change → update cursor on existing cards */
     zoomEnabledEl.addEventListener('change', function () {
       if (!zoomOn() && s > 1.02) resetZoom();
       else syncCursor();
     });
 
-    /* Cleanup document listeners when virtualized away */
+    /* CLEANUP — called by deactivateSlot when card is virtualized away */
     box._destroy = function () {
       document.removeEventListener('mousemove', onDocMove);
       document.removeEventListener('mouseup',   onDocUp);
+      clearTimeout(resetTid);
+      dragging = false;
     };
 
     syncCursor();
 
-    /* URL row (Ctrl+F searchable) */
-    var urlRow = document.createElement('div');
-    urlRow.className = 'card-url-row';
+    /* ── URL row ── */
+    var urlRow = document.createElement('div'); urlRow.className = 'card-url-row';
     var urlTxt = document.createElement('span');
     urlTxt.className = 'card-url-text';
     urlTxt.title = url; urlTxt.textContent = url;
     urlRow.appendChild(urlTxt);
 
-    /* Toolbar */
-    var toolbar = document.createElement('div');
-    toolbar.className = 'card-toolbar';
+    /* ── Toolbar ── */
+    var toolbar = document.createElement('div'); toolbar.className = 'card-toolbar';
 
+    /* Copy Link */
     var copyBtn = document.createElement('button');
     copyBtn.className = 'tcopy'; copyBtn.textContent = 'Copy Link';
     var cpTid = null;
@@ -470,54 +694,71 @@
       p.then(function () {
         copyBtn.textContent = 'Copied!'; copyBtn.classList.add('ok');
         clearTimeout(cpTid);
-        cpTid = setTimeout(function () {
-          copyBtn.textContent = 'Copy Link'; copyBtn.classList.remove('ok');
-        }, 1500);
+        cpTid = setTimeout(function () { copyBtn.textContent = 'Copy Link'; copyBtn.classList.remove('ok'); }, 1500);
       });
     });
 
+    /* Edit — entry point for Edit Mode */
+    var editBtn = document.createElement('button');
+    editBtn.className = 'tedit'; editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', function () {
+      if (card.classList.contains('editing')) {
+        /* Already editing this card → exit without saving (same as Cancel) */
+        EditMode.exit(false);
+      } else {
+        /* Reset zoom before entering edit mode (cleaner UX) */
+        if (s > 1.02) resetZoom(false);
+        EditMode.enter(card, url);
+      }
+    });
+
+    /* Remove */
     var removeBtn = document.createElement('button');
     removeBtn.className = 'tremove'; removeBtn.textContent = 'Remove';
     removeBtn.addEventListener('click', function () {
+      /* FIX: read live index from DOM instead of closed-over ci */
+      var parentSlot  = card.closest('.vslot');
+      var currentIdx  = parentSlot ? parseInt(parentSlot.dataset.idx, 10) : ci;
+
       if (box._destroy) box._destroy();
-      allUrls.splice(ci, 1);
-      var slot = slots.splice(ci, 1)[0];
-      activeSet.delete(ci);
-      for (var j = ci; j < slots.length; j++) {
+      if (card.classList.contains('editing')) EditMode.exit(false);
+
+      allUrls.splice(currentIdx, 1);
+      delete editStates[url];
+
+      var removedSlot = slots.splice(currentIdx, 1)[0];
+      activeSet.delete(removedSlot);
+
+      /* Re-sync idx on remaining slots + card-num labels */
+      for (var j = currentIdx; j < slots.length; j++) {
         slots[j].dataset.idx = String(j);
-        var n = slots[j].querySelector('.card-num');
-        if (n) n.textContent = 'Image ' + (j + 1);
+        var cn = slots[j].querySelector('.card-num');
+        if (cn) cn.textContent = 'Image ' + (j + 1);
       }
+
       refreshCount();
       card.classList.add('out');
       setTimeout(function () {
-        if (observer) observer.unobserve(slot);
-        slot.remove();
+        if (observer) observer.unobserve(removedSlot);
+        removedSlot.remove();
       }, 230);
     });
 
-    toolbar.appendChild(copyBtn); toolbar.appendChild(removeBtn);
-    card.appendChild(hdr); card.appendChild(box);
-    card.appendChild(urlRow); card.appendChild(toolbar);
-    return card;
-  }
+    toolbar.appendChild(copyBtn);
+    toolbar.appendChild(editBtn);
+    toolbar.appendChild(removeBtn);
 
-  /* deactivateSlot — cleanup drag listeners */
-  function deactivateSlotWithCleanup(slot) {
-    var box = slot.querySelector('.card-img-box');
-    if (box && box._destroy) box._destroy();
-    deactivateSlot(slot);
+    card.appendChild(hdr);
+    card.appendChild(box);
+    card.appendChild(urlRow);
+    card.appendChild(toolbar);
+    return card;
   }
 
   /* ════════════════════════════════════════════════════════
      GLOBAL SPACE-PAN STATE
-     Space + drag pans the zoomed image the cursor is over.
   ════════════════════════════════════════════════════════ */
-  var gState = {
-    spaceHeld: false, hoveredBox: null,
-    spacePanBox: null, spaceDrag: false,
-    spaceStartX: 0, spaceStartY: 0, spaceTx0: 0, spaceTy0: 0
-  };
+  var gState = { spaceHeld: false, hoveredBox: null };
 
   document.addEventListener('mouseover', function (e) {
     gState.hoveredBox = (e.target.closest ? e.target.closest('.card-img-box') : null) || null;
@@ -527,7 +768,7 @@
      KEYBOARD
   ════════════════════════════════════════════════════════ */
   var scrollVel = 0, scrollDir = 0, scrollRafId = null;
-  var heldKeys  = {};
+  var heldKeys  = Object.create(null);
 
   function scrollTick() {
     if (scrollDir === 0) return;
@@ -549,50 +790,87 @@
   }
 
   document.addEventListener('keydown', function (e) {
-    /* Space — always block page scroll */
+
+    /* ── Space: always block default scroll ── */
     if (e.code === 'Space') {
       e.preventDefault();
-      if (gState.spaceHeld) return;
       gState.spaceHeld = true;
-      var box = gState.hoveredBox;
-      if (box && box._zoom && box._zoom.s > 1.02 && zoomOn()) {
-        box.style.cursor = 'grab';
-        gState.spacePanBox = box;
+      return;
+    }
+
+    /* ── Esc: exit edit mode ── */
+    if (e.key === 'Escape') {
+      if (EditMode.isActive()) EditMode.exit(false);
+      return;
+    }
+
+    /* ── Ctrl+R: reset edits (only in edit mode) ── */
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
+      if (EditMode.isActive()) { e.preventDefault(); EditMode.reset(); }
+      return;
+    }
+
+    /* ── Everything below: ignore if typing ── */
+    if (isTypingTarget()) return;
+
+    var k = e.key;
+
+    /* ── F: fullscreen ── */
+    if (k.toLowerCase() === 'f' && !e.repeat) {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+      } else {
+        document.exitFullscreen && document.exitFullscreen();
       }
       return;
     }
 
-    if (isTypingTarget()) return;
-    var k = e.key.toLowerCase();
-
-    /* Z — toggle zoom */
-    if (k === 'z' && !e.repeat) {
+    /* ── Z: toggle zoom ── */
+    if (k.toLowerCase() === 'z' && !e.repeat) {
       zoomEnabledEl.checked = !zoomEnabledEl.checked;
       zoomEnabledEl.dispatchEvent(new Event('change'));
       return;
     }
 
-    /* W / S — page scroll */
-    if (k !== 'w' && k !== 's') return;
-    if (e.repeat) return;
-    e.preventDefault();
-    heldKeys[k] = true;
-    startScroll(k === 's' ? 1 : -1);
+    /* ── +/= : size up ── */
+    if ((k === '+' || k === '=') && !e.repeat) {
+      sizerEl.value = String(Math.min(10, parseInt(sizerEl.value, 10) + 1));
+      applySize(parseInt(sizerEl.value, 10));
+      return;
+    }
+
+    /* ── -: size down ── */
+    if (k === '-' && !e.repeat) {
+      sizerEl.value = String(Math.max(1, parseInt(sizerEl.value, 10) - 1));
+      applySize(parseInt(sizerEl.value, 10));
+      return;
+    }
+
+    /* ── Scroll keys: W/S/Arrows ── */
+    var isUp   = (k === 'w' || k === 'ArrowUp'   || k === 'ArrowLeft');
+    var isDown = (k === 's' || k === 'ArrowDown'  || k === 'ArrowRight');
+
+    if ((isUp || isDown) && !e.repeat) {
+      e.preventDefault();
+      heldKeys[k] = true;
+      startScroll(isDown ? 1 : -1);
+    }
   });
 
   document.addEventListener('keyup', function (e) {
-    if (e.code === 'Space') {
-      gState.spaceHeld = false; gState.spaceDrag = false;
-      gState.spacePanBox = null; return;
-    }
-    var k = e.key.toLowerCase();
-    delete heldKeys[k];
-    if (!heldKeys['w'] && !heldKeys['s']) stopScroll();
+    if (e.code === 'Space') { gState.spaceHeld = false; return; }
+    delete heldKeys[e.key];
+    /* Stop scroll only if ALL scroll keys are released */
+    var anyScroll = heldKeys['w'] || heldKeys['s'] ||
+      heldKeys['ArrowUp']    || heldKeys['ArrowDown'] ||
+      heldKeys['ArrowLeft']  || heldKeys['ArrowRight'];
+    if (!anyScroll) stopScroll();
   });
 
   window.addEventListener('blur', function () {
-    stopScroll(); heldKeys = {};
-    gState.spaceHeld = false; gState.spaceDrag = false; gState.spacePanBox = null;
+    stopScroll();
+    heldKeys = Object.create(null);
+    gState.spaceHeld = false;
   });
 
   /* ════════════════════════════════════════════════════════
@@ -617,19 +895,23 @@
 
     if (observer) observer.disconnect();
 
-    var CHUNK = 200, frag = document.createDocumentFragment();
+    var CHUNK = 200;
+    var frag  = document.createDocumentFragment();
+
     for (var i = 0; i < urls.length; i++) {
       var slot = makeSlot(startIdx + i);
       slots.push(slot);
       frag.appendChild(slot);
+
       if ((i + 1) % CHUNK === 0 || i === urls.length - 1) {
         gallery.appendChild(frag);
         frag = document.createDocumentFragment();
         progFill.style.width = Math.round(((i + 1) / urls.length) * 100) + '%';
         progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed\u2026';
         refreshCount();
-        await new Promise(function (r) {
-          requestAnimationFrame(function () { requestAnimationFrame(r); });
+        /* Yield to browser so UI stays responsive during large loads */
+        await new Promise(function (resolve) {
+          requestAnimationFrame(function () { requestAnimationFrame(resolve); });
         });
       }
     }
