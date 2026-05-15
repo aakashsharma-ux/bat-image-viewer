@@ -1,85 +1,167 @@
 /* ════════════════════════════════════════════════════════════
-   BAT-VIEWER  app.js  v15
+   BAT-VIEWER  app.js  v17
 
-   CHANGES FROM v14:
-   ─ FIXED: Duplicate image rendering — activeSet now tracks slot
-     references (not indices) so re-index after removals can't
-     cause double-activation.
-   ─ FIXED: Remove handler reads live index from slot.dataset.idx
-     instead of closed-over ci (stale after prior removals).
-   ─ FIXED: Document mousemove/mouseup listeners now always cleaned
-     up on slot deactivation (plug the event-listener leak).
-   ─ FIXED: No card hover transform animation (was triggering GPU
-     compositing on every visible card simultaneously = lag at scale).
-   ─ ADDED: Edit Mode — lazy-loaded, isolated, zero view-mode cost.
-   ─ ADDED: img-rotate-wrap layer for clean rotation + zoom coexist.
-   ─ ADDED: editStates map — edit persists across virtualization.
-   ─ ADDED: Keyboard ← → ↑ ↓  scroll, +/- size, F fullscreen,
-             Esc exit-edit, Ctrl+R reset-edits.
-   ─ ADDED: Keyboard shortcut help tooltip (⌨ button).
-   ─ REMOVED: Drag-reorder (caused index desync + duplication bugs).
-   ─ PERF: rootMargin 300% for smoother preload on fast scroll.
-   ─ PERF: will-change:transform only on img (already in CSS).
+   REFACTOR HIGHLIGHTS (v17):
+   ─ Single shared "chrome" layer: header, url-row, toolbar,
+     and remove handler are factored out. Image- and Video-card
+     factories only describe what is unique to their media type.
+   ─ Modules grouped under namespaces (Util, State, Theme, Size,
+     Scroll, EditState, EditMode, Virtual, ImageCard, VideoCard,
+     Keyboard, BulkLoad) — each section is self-contained.
+   ─ Video card: floating overlay controls (almost invisible at
+     rest, expanded on hover) so they don't block the bottom of
+     the picture. Adds a playback-speed cycler.
+   ─ Video card: cleaner timeupdate loop, single state-save fn,
+     a thin always-visible progress strip at the bottom edge.
+
+   PRESERVED CONTRACTS:
+   ─ Edit Mode applies filter to img/video and rotate to wrapper.
+   ─ Virtualization uses IntersectionObserver with slot refs.
+   ─ Per-card destroy hook (.card-*-box._destroy) for memory.
+   ─ editStates + videoStates keyed by URL survive virtualization.
 ════════════════════════════════════════════════════════════ */
-
 (function () {
   'use strict';
 
-  function $id(id) { return document.getElementById(id); }
+  /* ════════════════════════════════════════════════════════
+     UTIL
+  ════════════════════════════════════════════════════════ */
+  var Util = (function () {
+    function $(id) { return document.getElementById(id); }
+    function el(tag, cls, html) {
+      var n = document.createElement(tag);
+      if (cls != null)  n.className = cls;
+      if (html != null) n.innerHTML = html;
+      return n;
+    }
+    function on(t, type, fn, opts) { t.addEventListener(type, fn, opts || false); }
+    function stop(e) { e.stopPropagation(); }
+    function isTyping() {
+      var a = document.activeElement;
+      return !!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable));
+    }
+    function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+    function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
+    function fmtTime(t, precise) {
+      if (!isFinite(t) || t < 0) t = 0;
+      var h = Math.floor(t / 3600);
+      var m = Math.floor((t % 3600) / 60);
+      var s = Math.floor(t % 60);
+      var base = (h > 0 ? h + ':' + pad(m, 2) : m) + ':' + pad(s, 2);
+      if (!precise) return base;
+      var ms = Math.floor((t - Math.floor(t)) * 1000);
+      return base + '.' + pad(ms, 3);
+    }
+    function copyToClipboard(text) {
+      if (navigator.clipboard) return navigator.clipboard.writeText(text);
+      return new Promise(function (resolve) {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        ta.remove(); resolve();
+      });
+    }
+    return {
+      $: $, el: el, on: on, stop: stop, isTyping: isTyping,
+      clamp: clamp, fmtTime: fmtTime, copyToClipboard: copyToClipboard
+    };
+  })();
 
-  /* ── DOM refs ── */
-  var html          = document.documentElement;
-  var gallery       = $id('gallery');
-  var bulkArea      = $id('bulkArea');
-  var bulkTally     = $id('bulkTally');
-  var bulkLoadBtn   = $id('bulkLoadBtn');
-  var bulkClearBtn  = $id('bulkClearBtn');
-  var appendMode    = $id('appendMode');
-  var statusMsg     = $id('statusMsg');
-  var progWrap      = $id('progWrap');
-  var progFill      = $id('progFill');
-  var progLabel     = $id('progLabel');
-  var gCount        = $id('gCount');
-  var clearAllBtn   = $id('clearAllBtn');
-  var btt           = $id('btt');
-  var sizerEl       = $id('sizer');
-  var sizeBadgeEl   = $id('sizeBadge');
-  var scrollSpeedEl = $id('scrollSpeed');
-  var scrollBadgeEl = $id('scrollBadge');
-  var zoomEnabledEl = $id('zoomEnabled');
-  var themeToggleEl = $id('themeToggle');
-  var themeLabelEl  = $id('themeLabel');
-  var helpBtn       = $id('helpBtn');
-  var helpTooltip   = $id('helpTooltip');
+  var $   = Util.$;
+  var el  = Util.el;
+  var on  = Util.on;
+
+  /* ════════════════════════════════════════════════════════
+     DOM REFS  (single source of truth)
+  ════════════════════════════════════════════════════════ */
+  var DOM = {
+    html         : document.documentElement,
+    gallery      : $('gallery'),
+    bulkArea     : $('bulkArea'),
+    bulkTally    : $('bulkTally'),
+    bulkLoadBtn  : $('bulkLoadBtn'),
+    bulkClearBtn : $('bulkClearBtn'),
+    appendMode   : $('appendMode'),
+    statusMsg    : $('statusMsg'),
+    progWrap     : $('progWrap'),
+    progFill     : $('progFill'),
+    progLabel    : $('progLabel'),
+    gCount       : $('gCount'),
+    clearAllBtn  : $('clearAllBtn'),
+    btt          : $('btt'),
+    sizer        : $('sizer'),
+    sizeBadge    : $('sizeBadge'),
+    scrollSpeed  : $('scrollSpeed'),
+    scrollBadge  : $('scrollBadge'),
+    zoomEnabled  : $('zoomEnabled'),
+    themeToggle  : $('themeToggle'),
+    themeLabel   : $('themeLabel'),
+    helpBtn      : $('helpBtn'),
+    helpTooltip  : $('helpTooltip')
+  };
+
+  /* ════════════════════════════════════════════════════════
+     STATE  (all mutable runtime state lives here)
+  ════════════════════════════════════════════════════════ */
+  var State = {
+    allUrls    : [],
+    slots      : [],
+    activeSet  : new Set(),    /* Set<HTMLElement> — slot references, never indices */
+    observer   : null,
+    isLoading  : false,
+    editStates : Object.create(null),
+    videoStates: Object.create(null),
+    spaceHeld  : false,
+    hoveredBox : null,
+    hoveredVideoCard: null,
+    currentMaxH: '220px'
+  };
+
+  /* ════════════════════════════════════════════════════════
+     STATUS / TOAST
+  ════════════════════════════════════════════════════════ */
+  var Toast = (function () {
+    var tid = null;
+    function show(msg, cls, ms) {
+      clearTimeout(tid);
+      DOM.statusMsg.textContent = msg;
+      DOM.statusMsg.className = 'status ' + (cls || 'ok');
+      tid = setTimeout(function () { DOM.statusMsg.className = 'status hide'; }, ms || 3000);
+    }
+    return { show: show };
+  })();
 
   /* ════════════════════════════════════════════════════════
      THEME
   ════════════════════════════════════════════════════════ */
-  var savedTheme = localStorage.getItem('bv-theme') || 'night';
-  applyTheme(savedTheme);
-
-  function applyTheme(theme) {
-    html.setAttribute('data-theme', theme);
-    themeToggleEl.checked = (theme === 'moon');
-    themeLabelEl.textContent = theme === 'moon' ? '\uD83C\uDF15 Moon' : '\uD83C\uDF19 Night';
-    localStorage.setItem('bv-theme', theme);
-  }
-  themeToggleEl.addEventListener('change', function () {
-    applyTheme(themeToggleEl.checked ? 'moon' : 'night');
-  });
+  (function Theme() {
+    function apply(theme) {
+      DOM.html.setAttribute('data-theme', theme);
+      DOM.themeToggle.checked = (theme === 'moon');
+      DOM.themeLabel.textContent = theme === 'moon' ? '\uD83C\uDF15 Moon' : '\uD83C\uDF19 Night';
+      localStorage.setItem('bv-theme', theme);
+    }
+    apply(localStorage.getItem('bv-theme') || 'night');
+    on(DOM.themeToggle, 'change', function () {
+      apply(DOM.themeToggle.checked ? 'moon' : 'night');
+    });
+  })();
 
   /* ════════════════════════════════════════════════════════
      HELP TOOLTIP
   ════════════════════════════════════════════════════════ */
-  var helpOpen = false;
-  helpBtn.addEventListener('click', function (e) {
-    e.stopPropagation();
-    helpOpen = !helpOpen;
-    helpTooltip.classList.toggle('visible', helpOpen);
-  });
-  document.addEventListener('click', function () {
-    if (helpOpen) { helpOpen = false; helpTooltip.classList.remove('visible'); }
-  });
+  (function Help() {
+    var open = false;
+    on(DOM.helpBtn, 'click', function (e) {
+      e.stopPropagation();
+      open = !open;
+      DOM.helpTooltip.classList.toggle('visible', open);
+    });
+    on(document, 'click', function () {
+      if (open) { open = false; DOM.helpTooltip.classList.remove('visible'); }
+    });
+  })();
 
   /* ════════════════════════════════════════════════════════
      SIZE PRESETS
@@ -94,27 +176,23 @@
     { label: '1/Screen',  cols: 1, maxH: '70vh'  },
     { label: '1/Screen+', cols: 1, maxH: '80vh'  },
     { label: 'Full',      cols: 1, maxH: '90vh'  },
-    { label: 'Max',       cols: 1, maxH: 'none'  },
+    { label: 'Max',       cols: 1, maxH: 'none'  }
   ];
 
-  var currentMaxH = SIZE_PRESETS[2].maxH;
-
   function applySize(v) {
-    var p = SIZE_PRESETS[Math.min(9, Math.max(0, v - 1))];
-    currentMaxH = p.maxH;
-    sizeBadgeEl.textContent = p.label;
-    gallery.style.gridTemplateColumns =
+    var p = SIZE_PRESETS[Util.clamp(v - 1, 0, 9)];
+    State.currentMaxH = p.maxH;
+    DOM.sizeBadge.textContent = p.label;
+    DOM.gallery.style.gridTemplateColumns =
       p.cols === 1 ? '1fr' : 'repeat(' + p.cols + ',minmax(0,1fr))';
-    gallery.querySelectorAll('.card-img').forEach(function (img) {
-      img.style.maxHeight = p.maxH;
-    });
-    gallery.querySelectorAll('.vslot').forEach(function (s) {
-      s.style.minHeight = p.maxH === 'none' ? '200px' : p.maxH;
-    });
+    var slotMin = p.maxH === 'none' ? '200px' : p.maxH;
+    DOM.gallery.querySelectorAll('.card-img,.card-video')
+      .forEach(function (m) { m.style.maxHeight = p.maxH; });
+    DOM.gallery.querySelectorAll('.vslot')
+      .forEach(function (s) { s.style.minHeight = slotMin; });
   }
-
-  sizerEl.addEventListener('input', function () { applySize(parseInt(sizerEl.value, 10)); });
-  applySize(parseInt(sizerEl.value, 10));
+  on(DOM.sizer, 'input', function () { applySize(parseInt(DOM.sizer.value, 10)); });
+  applySize(parseInt(DOM.sizer.value, 10));
 
   /* ════════════════════════════════════════════════════════
      SCROLL SPEED
@@ -124,423 +202,375 @@
     { label: 'Slow',      base: 30,  max: 100, ramp: 13 },
     { label: 'Medium',    base: 55,  max: 170, ramp: 22 },
     { label: 'Fast',      base: 90,  max: 260, ramp: 36 },
-    { label: 'Very Fast', base: 140, max: 400, ramp: 55 },
+    { label: 'Very Fast', base: 140, max: 400, ramp: 55 }
   ];
-
   function getScrollPreset() {
-    return SCROLL_PRESETS[Math.min(4, Math.max(0, parseInt(scrollSpeedEl.value, 10) - 1))];
+    return SCROLL_PRESETS[Util.clamp(parseInt(DOM.scrollSpeed.value, 10) - 1, 0, 4)];
   }
-  scrollSpeedEl.addEventListener('input', function () {
-    scrollBadgeEl.textContent = getScrollPreset().label;
+  on(DOM.scrollSpeed, 'input', function () {
+    DOM.scrollBadge.textContent = getScrollPreset().label;
   });
-  scrollBadgeEl.textContent = getScrollPreset().label;
+  DOM.scrollBadge.textContent = getScrollPreset().label;
+
+  function zoomOn() { return DOM.zoomEnabled.checked; }
 
   /* ════════════════════════════════════════════════════════
-     ZOOM TOGGLE
+     URL PARSE / VALIDATE / MEDIA TYPE
   ════════════════════════════════════════════════════════ */
-  function zoomOn() { return zoomEnabledEl.checked; }
+  var VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|ogv|ogg)(?:$|[?#])/i;
+  function getMediaType(url) { return url && VIDEO_EXT_RE.test(url) ? 'video' : 'image'; }
 
-  /* ════════════════════════════════════════════════════════
-     HELPERS
-  ════════════════════════════════════════════════════════ */
   function parseUrls(txt) {
     return txt.split(/[\n,]+/)
       .map(function (s) { return s.trim(); })
       .filter(function (s) { return s.length > 6; })
       .slice(0, 1000);
   }
-
-  function isUrl(s) {
+  function isValidUrl(s) {
     try {
       var u = new URL(s);
       return u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'data:';
-    } catch (e) { return false; }
+    } catch (_) { return false; }
   }
+  function refreshCount() { DOM.gCount.textContent = State.allUrls.length; }
 
-  function isTypingTarget() {
-    var a = document.activeElement;
-    return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
-  }
-
-  var stTid = null;
-  function showStatus(msg, cls, ms) {
-    clearTimeout(stTid);
-    statusMsg.textContent = msg;
-    statusMsg.className = 'status ' + (cls || 'ok');
-    stTid = setTimeout(function () { statusMsg.className = 'status hide'; }, ms || 3000);
-  }
-
-  bulkArea.addEventListener('input', function () {
-    var n = parseUrls(bulkArea.value).length;
-    bulkTally.innerHTML = '<b>' + n + '</b> URL' + (n !== 1 ? 's' : '');
+  on(DOM.bulkArea, 'input', function () {
+    var n = parseUrls(DOM.bulkArea.value).length;
+    DOM.bulkTally.innerHTML = '<b>' + n + '</b> URL' + (n !== 1 ? 's' : '');
   });
 
-  function refreshCount() { gCount.textContent = allUrls.length; }
-
   /* ════════════════════════════════════════════════════════
-     EDIT STATE PERSISTENCE
-     Keyed by URL so states survive virtualization cycles.
-     A card scrolled off-screen is destroyed and recreated;
-     on recreation it reads from this map and re-applies.
+     PERSISTED PER-URL STATE
+     Edit (filter / rotation) + Video (time / muted / volume / rate).
   ════════════════════════════════════════════════════════ */
-  var editStates = Object.create(null);
-
-  function getEditState(url) {
-    return editStates[url]
-      ? { brightness: editStates[url].brightness, contrast: editStates[url].contrast, rotation: editStates[url].rotation }
-      : { brightness: 1, contrast: 1, rotation: 0 };
-  }
-
-  function saveEditState(url, state) {
-    if (state.brightness === 1 && state.contrast === 1 && state.rotation === 0) {
-      delete editStates[url];
-    } else {
-      editStates[url] = { brightness: state.brightness, contrast: state.contrast, rotation: state.rotation };
+  var EditState = {
+    get: function (url) {
+      var s = State.editStates[url];
+      return s
+        ? { brightness: s.brightness, contrast: s.contrast, rotation: s.rotation }
+        : { brightness: 1, contrast: 1, rotation: 0 };
+    },
+    set: function (url, s) {
+      if (s.brightness === 1 && s.contrast === 1 && s.rotation === 0) {
+        delete State.editStates[url];
+      } else {
+        State.editStates[url] = { brightness: s.brightness, contrast: s.contrast, rotation: s.rotation };
+      }
+    },
+    applyTo: function (card, s) {
+      var media = card.querySelector('.card-img') || card.querySelector('.card-video');
+      var wrap  = card.querySelector('.img-rotate-wrap');
+      if (!media || !wrap) return;
+      media.style.filter = (s.brightness !== 1 || s.contrast !== 1)
+        ? 'brightness(' + s.brightness + ') contrast(' + s.contrast + ')' : '';
+      wrap.style.transform = s.rotation !== 0 ? 'rotate(' + s.rotation + 'deg)' : '';
     }
-  }
+  };
 
-  /* Apply a state object to a card's image and rotation wrapper */
-  function applyStateToCard(card, state) {
-    var img  = card.querySelector('.card-img');
-    var wrap = card.querySelector('.img-rotate-wrap');
-    if (!img || !wrap) return;
-    img.style.filter = (state.brightness !== 1 || state.contrast !== 1)
-      ? 'brightness(' + state.brightness + ') contrast(' + state.contrast + ')'
-      : '';
-    wrap.style.transform = state.rotation !== 0
-      ? 'rotate(' + state.rotation + 'deg)'
-      : '';
-  }
+  var VideoState = {
+    get: function (url) {
+      var s = State.videoStates[url];
+      return {
+        time   : s && s.time    || 0,
+        muted  : s ? s.muted    !== false : true,
+        volume : s && typeof s.volume === 'number' ? s.volume : 1,
+        rate   : s && s.rate    || 1
+      };
+    },
+    set: function (url, s) {
+      State.videoStates[url] = {
+        time: s.time, muted: s.muted, volume: s.volume, rate: s.rate
+      };
+    },
+    clear: function () { State.videoStates = Object.create(null); }
+  };
 
   /* ════════════════════════════════════════════════════════
-     EDIT MODE  (IIFE singleton — lazy, isolated)
-
-     Lifecycle: enter(card, url) → user adjusts → exit(apply)
-     Heavy DOM refs are grabbed once on first use (ensurePanel).
-     The panel element exists in the DOM from page load but is
-     off-screen (transform:translateX(100%)) so it has zero
-     layout or paint cost in view mode.
+     EDIT MODE  (singleton — lazy panel wire-up)
   ════════════════════════════════════════════════════════ */
   var EditMode = (function () {
-    var panelEl       = null;
-    var activeCard    = null;
-    var activeUrl     = null;
-    var savedState    = null;    /* state on enter — restored on Cancel */
-    var liveState     = null;    /* current working state */
+    var panel, activeCard = null, activeUrl = null;
+    var saved = null, live = null;
+    var refs  = null, ready = false;
 
-    /* Panel control refs (grabbed on first use) */
-    var epBrightness, epContrast, epRotate;
-    var epBrightnessVal, epContrastVal, epRotateVal;
-    var ready = false;
-
-    /* Wire up panel controls exactly once */
-    function ensurePanel() {
+    function ensure() {
       if (ready) return;
       ready = true;
-      panelEl        = $id('editPanel');
-      epBrightness   = $id('epBrightness');
-      epContrast     = $id('epContrast');
-      epRotate       = $id('epRotate');
-      epBrightnessVal = $id('epBrightnessVal');
-      epContrastVal   = $id('epContrastVal');
-      epRotateVal     = $id('epRotateVal');
-
-      epBrightness.addEventListener('input', function () {
-        liveState.brightness = epBrightness.value / 100;
-        epBrightnessVal.textContent = epBrightness.value + '%';
-        previewLive();
-      });
-
-      epContrast.addEventListener('input', function () {
-        liveState.contrast = epContrast.value / 100;
-        epContrastVal.textContent = epContrast.value + '%';
-        previewLive();
-      });
-
-      epRotate.addEventListener('input', function () {
-        liveState.rotation = parseInt(epRotate.value, 10);
-        epRotateVal.textContent = epRotate.value + '\u00b0';
-        previewLive();
-      });
-
-      $id('epRotCCW').addEventListener('click', function () {
-        liveState.rotation = normaliseAngle(liveState.rotation - 90);
-        syncRotSlider();
-        previewLive();
-      });
-
-      $id('epRotCW').addEventListener('click', function () {
-        liveState.rotation = normaliseAngle(liveState.rotation + 90);
-        syncRotSlider();
-        previewLive();
-      });
-
-      $id('epReset').addEventListener('click',  function () { resetLive(); });
-      $id('epCancel').addEventListener('click', function () { exit(false); });
-      $id('epDone').addEventListener('click',   function () { exit(true);  });
-      $id('epClose').addEventListener('click',  function () { exit(false); });
+      panel = $('editPanel');
+      refs = {
+        b: $('epBrightness'), c: $('epContrast'), r: $('epRotate'),
+        bv: $('epBrightnessVal'), cv: $('epContrastVal'), rv: $('epRotateVal')
+      };
+      on(refs.b, 'input', function () { live.brightness = refs.b.value / 100; refs.bv.textContent = refs.b.value + '%'; preview(); });
+      on(refs.c, 'input', function () { live.contrast   = refs.c.value / 100; refs.cv.textContent = refs.c.value + '%'; preview(); });
+      on(refs.r, 'input', function () { live.rotation   = parseInt(refs.r.value, 10); refs.rv.textContent = refs.r.value + '\u00b0'; preview(); });
+      on($('epRotCCW'), 'click', function () { live.rotation = normalise(live.rotation - 90); syncRot(); preview(); });
+      on($('epRotCW'),  'click', function () { live.rotation = normalise(live.rotation + 90); syncRot(); preview(); });
+      on($('epReset'),  'click', resetLive);
+      on($('epCancel'), 'click', function () { exit(false); });
+      on($('epDone'),   'click', function () { exit(true);  });
+      on($('epClose'),  'click', function () { exit(false); });
     }
-
-    /* Clamp angle to -180..180 range for the slider */
-    function normaliseAngle(deg) {
-      while (deg >  180) deg -= 360;
-      while (deg < -180) deg += 360;
-      return deg;
-    }
-
-    function syncRotSlider() {
-      epRotate.value = liveState.rotation;
-      epRotateVal.textContent = liveState.rotation + '\u00b0';
-    }
-
-    function previewLive() {
-      if (activeCard) applyStateToCard(activeCard, liveState);
-    }
-
+    function normalise(d) { while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+    function syncRot()   { refs.r.value = live.rotation; refs.rv.textContent = live.rotation + '\u00b0'; }
+    function preview()   { if (activeCard) EditState.applyTo(activeCard, live); }
     function resetLive() {
-      liveState = { brightness: 1, contrast: 1, rotation: 0 };
-      epBrightness.value  = 100; epBrightnessVal.textContent = '100%';
-      epContrast.value    = 100; epContrastVal.textContent   = '100%';
-      epRotate.value      = 0;   epRotateVal.textContent     = '0\u00b0';
-      previewLive();
+      live = { brightness: 1, contrast: 1, rotation: 0 };
+      refs.b.value = 100; refs.bv.textContent = '100%';
+      refs.c.value = 100; refs.cv.textContent = '100%';
+      refs.r.value = 0;   refs.rv.textContent = '0\u00b0';
+      preview();
     }
-
-    function populatePanel(state) {
-      var b = Math.round(state.brightness * 100);
-      var c = Math.round(state.contrast   * 100);
-      var r = state.rotation;
-      epBrightness.value       = b;  epBrightnessVal.textContent = b + '%';
-      epContrast.value         = c;  epContrastVal.textContent   = c + '%';
-      epRotate.value           = r;  epRotateVal.textContent     = r + '\u00b0';
+    function populate(s) {
+      var b = Math.round(s.brightness * 100), c = Math.round(s.contrast * 100);
+      refs.b.value = b; refs.bv.textContent = b + '%';
+      refs.c.value = c; refs.cv.textContent = c + '%';
+      refs.r.value = s.rotation; refs.rv.textContent = s.rotation + '\u00b0';
     }
-
-    /* ── Public API ── */
-
     function enter(card, url) {
       if (activeCard === card) return;
-      if (activeCard) exit(false);       /* close any existing session */
-
-      ensurePanel();                     /* wire controls on first use */
-
-      activeCard = card;
-      activeUrl  = url;
-      savedState = getEditState(url);    /* snapshot for Cancel */
-      liveState  = { brightness: savedState.brightness, contrast: savedState.contrast, rotation: savedState.rotation };
-
-      populatePanel(liveState);
-
-      panelEl.classList.add('visible');
-      panelEl.setAttribute('aria-hidden', 'false');
+      if (activeCard) exit(false);
+      ensure();
+      activeCard = card; activeUrl = url;
+      saved = EditState.get(url);
+      live  = { brightness: saved.brightness, contrast: saved.contrast, rotation: saved.rotation };
+      populate(live);
+      panel.classList.add('visible');
+      panel.setAttribute('aria-hidden', 'false');
       document.body.classList.add('edit-active');
       card.classList.add('editing');
     }
-
     function exit(apply) {
       if (!activeCard) return;
-
-      if (apply) {
-        saveEditState(activeUrl, liveState);
-        applyStateToCard(activeCard, liveState);
-      } else {
-        /* Cancel — restore the state from when we entered */
-        applyStateToCard(activeCard, savedState);
-      }
-
+      if (apply) { EditState.set(activeUrl, live); EditState.applyTo(activeCard, live); }
+      else       { EditState.applyTo(activeCard, saved); }
       activeCard.classList.remove('editing');
       document.body.classList.remove('edit-active');
-      panelEl.classList.remove('visible');
-      panelEl.setAttribute('aria-hidden', 'true');
+      panel.classList.remove('visible');
+      panel.setAttribute('aria-hidden', 'true');
+      activeCard = activeUrl = saved = live = null;
+    }
+    return {
+      enter   : enter,
+      exit    : exit,
+      reset   : function () { if (activeCard) resetLive(); },
+      isActive: function () { return activeCard !== null; }
+    };
+  })();
 
-      activeCard = null;
-      activeUrl  = null;
-      savedState = null;
-      liveState  = null;
+  /* ════════════════════════════════════════════════════════
+     SHARED CARD CHROME  (header, url row, toolbar, remove)
+
+     Eliminates the duplicate boilerplate that existed between
+     image and video card factories.
+  ════════════════════════════════════════════════════════ */
+  var Chrome = (function () {
+    function header(num, type) {
+      var hdr = el('div', 'card-header');
+      var lbl = type === 'video' ? 'Video ' : 'Image ';
+      var tag = type === 'video' ? ' <span class="media-tag">VIDEO</span>' : '';
+      var numEl = el('span', 'card-num'); numEl.innerHTML = lbl + num + tag;
+      var dimsEl = el('span', 'card-dims');
+      hdr.appendChild(numEl); hdr.appendChild(dimsEl);
+      return { hdr: hdr, dimsEl: dimsEl, numEl: numEl };
     }
 
-    function resetActive() {
-      if (activeCard) resetLive();
+    function urlRow(url) {
+      var row = el('div', 'card-url-row');
+      var txt = el('span', 'card-url-text');
+      txt.title = url; txt.textContent = url;
+      row.appendChild(txt);
+      return row;
     }
 
-    function isActive() { return activeCard !== null; }
+    function makeBtn(cls, label, title) {
+      var b = el('button', cls); b.textContent = label;
+      if (title) b.title = title;
+      return b;
+    }
 
-    return { enter: enter, exit: exit, reset: resetActive, isActive: isActive };
+    /* Builds Copy/Edit/Remove toolbar.
+       opts: { url, onCopyLink, onEdit, onRemove } */
+    function toolbar(opts) {
+      var bar = el('div', 'card-toolbar');
+
+      var copyBtn = makeBtn('tcopy', 'Copy Link');
+      var copyTid = null;
+      on(copyBtn, 'click', function () {
+        var link = opts.onCopyLink ? opts.onCopyLink() : opts.url;
+        var label = (typeof link === 'object' && link.label) ? link.label : 'Copied!';
+        var text  = (typeof link === 'object') ? link.text : link;
+        Util.copyToClipboard(text).then(function () {
+          copyBtn.textContent = label;
+          copyBtn.classList.add('ok');
+          clearTimeout(copyTid);
+          copyTid = setTimeout(function () {
+            copyBtn.textContent = 'Copy Link';
+            copyBtn.classList.remove('ok');
+          }, 1700);
+        });
+      });
+
+      var editBtn = makeBtn('tedit', 'Edit');
+      on(editBtn, 'click', function () { opts.onEdit && opts.onEdit(editBtn); });
+
+      var removeBtn = makeBtn('tremove', 'Remove');
+      on(removeBtn, 'click', function () { opts.onRemove && opts.onRemove(); });
+
+      bar.appendChild(copyBtn);
+      bar.appendChild(editBtn);
+      bar.appendChild(removeBtn);
+      return bar;
+    }
+
+    /* Single removeCard helper used by both card types. */
+    function removeCard(card, fallbackIdx, beforeRemove) {
+      var parentSlot = card.closest('.vslot');
+      var idx = parentSlot ? parseInt(parentSlot.dataset.idx, 10) : fallbackIdx;
+      var url = State.allUrls[idx];
+
+      if (typeof beforeRemove === 'function') beforeRemove();
+      if (card.classList.contains('editing')) EditMode.exit(false);
+
+      State.allUrls.splice(idx, 1);
+      delete State.editStates[url];
+      delete State.videoStates[url];
+
+      var removedSlot = State.slots.splice(idx, 1)[0];
+      State.activeSet.delete(removedSlot);
+
+      for (var j = idx; j < State.slots.length; j++) {
+        State.slots[j].dataset.idx = String(j);
+        var cn = State.slots[j].querySelector('.card-num');
+        if (cn) {
+          var jt = getMediaType(State.allUrls[j]);
+          var lbl = jt === 'video' ? 'Video ' : 'Image ';
+          var tag = jt === 'video' ? ' <span class="media-tag">VIDEO</span>' : '';
+          cn.innerHTML = lbl + (j + 1) + tag;
+        }
+      }
+      refreshCount();
+      card.classList.add('out');
+      setTimeout(function () {
+        if (State.observer) State.observer.unobserve(removedSlot);
+        removedSlot.remove();
+      }, 230);
+    }
+
+    return { header: header, urlRow: urlRow, toolbar: toolbar, removeCard: removeCard };
   })();
 
   /* ════════════════════════════════════════════════════════
      VIRTUAL GALLERY ENGINE
-
-     FIX — activeSet now uses slot element references, not
-     integer indices. This means re-indexing after a remove
-     cannot accidentally mark a slot as "not active" when it
-     is, or vice-versa. The integer index stored in
-     slot.dataset.idx is only used to look up allUrls[i].
   ════════════════════════════════════════════════════════ */
-  var allUrls   = [];
-  var slots     = [];
-  var activeSet = new Set();   /* Set<HTMLElement> — slot references */
-  var observer  = null;
-  var isLoading = false;
-
-  function makeUrlLabel(url) {
-    var s = document.createElement('span');
-    s.className = 'url-label';
-    s.textContent = url;
-    return s;
-  }
-
-  function makeSlot(i) {
-    var slot = document.createElement('div');
-    slot.className = 'vslot';
-    slot.style.minHeight = (currentMaxH === 'none' ? '200px' : currentMaxH);
-    slot.dataset.idx = String(i);
-    slot.appendChild(makeUrlLabel(allUrls[i]));
-    return slot;
-  }
-
-  /* Activate: build and insert a card into a slot */
-  function activateSlot(slot) {
-    if (activeSet.has(slot)) return;           /* already active — no duplicate */
-    var i = parseInt(slot.dataset.idx, 10);
-    if (i >= allUrls.length) return;
-    activeSet.add(slot);
-    slot.innerHTML = '';
-    slot.appendChild(buildCard(i));
-  }
-
-  /* Deactivate: tear down the card, free memory, clean listeners */
-  function deactivateSlot(slot) {
-    if (!activeSet.has(slot)) return;
-    activeSet.delete(slot);
-    /* Cleanup zoom drag listeners attached to document */
-    var box = slot.querySelector('.card-img-box');
-    if (box && box._destroy) box._destroy();
-    /* Release img src to free browser decode memory */
-    slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
-    slot.innerHTML = '';
-    var i = parseInt(slot.dataset.idx, 10);
-    if (i < allUrls.length) slot.appendChild(makeUrlLabel(allUrls[i]));
-  }
-
-  function rebuildObserver() {
-    if (observer) observer.disconnect();
-    /* rootMargin 300%: preload 3 screens worth above and below viewport.
-       This makes fast scrolling feel instant for most setups. */
-    observer = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting) activateSlot(e.target);
-        else                  deactivateSlot(e.target);
+  var Virtual = (function () {
+    function makeUrlLabel(url) {
+      var s = el('span', 'url-label');
+      s.textContent = url;
+      return s;
+    }
+    function makeSlot(i) {
+      var slot = el('div', 'vslot');
+      slot.style.minHeight = (State.currentMaxH === 'none' ? '200px' : State.currentMaxH);
+      slot.dataset.idx = String(i);
+      slot.appendChild(makeUrlLabel(State.allUrls[i]));
+      return slot;
+    }
+    function activate(slot) {
+      if (State.activeSet.has(slot)) return;
+      var i = parseInt(slot.dataset.idx, 10);
+      if (i >= State.allUrls.length) return;
+      State.activeSet.add(slot);
+      slot.innerHTML = '';
+      var url = State.allUrls[i];
+      slot.appendChild(
+        getMediaType(url) === 'video' ? VideoCard.build(i) : ImageCard.build(i)
+      );
+    }
+    function deactivate(slot) {
+      if (!State.activeSet.has(slot)) return;
+      State.activeSet.delete(slot);
+      var box = slot.querySelector('.card-img-box');
+      if (box && box._destroy) box._destroy();
+      slot.querySelectorAll('img').forEach(function (img) { img.src = ''; });
+      slot.querySelectorAll('video').forEach(function (v) {
+        try { v.pause(); } catch (_) {}
+        v.removeAttribute('src');
+        try { v.load(); } catch (_) {}
       });
-    }, { root: null, rootMargin: '300% 0px 300% 0px', threshold: 0 });
-    slots.forEach(function (s) { observer.observe(s); });
-  }
-
-  function clearGallery() {
-    if (observer) { observer.disconnect(); observer = null; }
-    if (EditMode.isActive()) EditMode.exit(false);
-    gallery.querySelectorAll('img').forEach(function (img) { img.src = ''; });
-    gallery.innerHTML = '';
-    allUrls = []; slots = []; activeSet = new Set();
-    refreshCount();
-  }
+      slot.innerHTML = '';
+      var i = parseInt(slot.dataset.idx, 10);
+      if (i < State.allUrls.length) slot.appendChild(makeUrlLabel(State.allUrls[i]));
+    }
+    function rebuildObserver() {
+      if (State.observer) State.observer.disconnect();
+      /* 300% rootMargin: preload three screens worth of cards */
+      State.observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) activate(e.target);
+          else                  deactivate(e.target);
+        });
+      }, { root: null, rootMargin: '300% 0px 300% 0px', threshold: 0 });
+      State.slots.forEach(function (s) { State.observer.observe(s); });
+    }
+    function clear() {
+      if (State.observer) { State.observer.disconnect(); State.observer = null; }
+      if (EditMode.isActive()) EditMode.exit(false);
+      DOM.gallery.querySelectorAll('img').forEach(function (img) { img.src = ''; });
+      DOM.gallery.querySelectorAll('video').forEach(function (v) {
+        try { v.pause(); } catch (_) {}
+        v.removeAttribute('src');
+        try { v.load(); } catch (_) {}
+      });
+      DOM.gallery.innerHTML = '';
+      State.allUrls = []; State.slots = []; State.activeSet = new Set();
+      VideoState.clear();
+      refreshCount();
+    }
+    function appendUrls(urls) {
+      if (!urls || !urls.length) return;
+      var startIdx = State.allUrls.length;
+      State.allUrls = State.allUrls.concat(urls);
+      var frag = document.createDocumentFragment();
+      for (var i = 0; i < urls.length; i++) {
+        var slot = makeSlot(startIdx + i);
+        State.slots.push(slot);
+        frag.appendChild(slot);
+      }
+      DOM.gallery.appendChild(frag);
+      if (!State.observer) rebuildObserver();
+      else State.slots.slice(startIdx).forEach(function (s) { State.observer.observe(s); });
+      refreshCount();
+    }
+    return {
+      makeSlot: makeSlot, rebuildObserver: rebuildObserver,
+      clear: clear, appendUrls: appendUrls
+    };
+  })();
 
   /* ════════════════════════════════════════════════════════
-     CARD FACTORY
+     ZOOM + PAN  (shared by ImageCard and VideoCard)
 
-     Structure:
-       .card
-         .card-header
-         .card-img-box
-           .img-rotate-wrap   ← rotation applied here (CSS transform)
-             .card-img         ← zoom applied here (JS transform, will-change)
-           .zoom-badge
-           .zoom-hint
-         .card-url-row
-         .card-toolbar
-           [Copy Link] [Edit] [Remove]
+     attachZoom(card, box, media, badge)
+       card  — the outer .card element (editing-class gate)
+       box   — the .card-img-box / .card-video-box (clip + cursor)
+       media — the <img> or <video> element to transform
+       badge — the .zoom-badge overlay element
+
+     Returns { destroy, syncCursor, reset }.
+
+     Zoom is gated by the global zoomOn() toggle (Z key / topbar).
+     Scroll-wheel up/down zooms in/out around the cursor.
+     Drag pans when s > 1.  Dbl-click resets or quick-zooms to 2.5×.
   ════════════════════════════════════════════════════════ */
-  function buildCard(ci) {
-    var url = allUrls[ci];
-    var num = ci + 1;
-
-    var card = document.createElement('div');
-    card.className = 'card';
-
-    /* ── Header ── */
-    var hdr   = document.createElement('div'); hdr.className = 'card-header';
-    var numEl = document.createElement('span'); numEl.className = 'card-num'; numEl.textContent = 'Image ' + num;
-    var dimsEl= document.createElement('span'); dimsEl.className = 'card-dims';
-    hdr.appendChild(numEl); hdr.appendChild(dimsEl);
-
-    /* ── Image box ── */
-    var box = document.createElement('div');
-    box.className = 'card-img-box';
-
-    /* Spinner */
-    var spin = document.createElement('div');
-    spin.className = 'card-spinner';
-    spin.innerHTML = '<div class="spinner"></div>';
-    box.appendChild(spin);
-
-    /* Rotation wrapper — receives CSS rotate(); isolated from zoom */
-    var rotateWrap = document.createElement('div');
-    rotateWrap.className = 'img-rotate-wrap';
-
-    /* Image */
-    var img = document.createElement('img');
-    img.className = 'card-img';
-    img.alt = 'Image ' + num;
-    img.decoding = 'async';
-    img.draggable = false;
-    img.style.transformOrigin = '0 0';
-    img.style.maxHeight = currentMaxH;
-
-    /* Re-apply stored edit state so it survives virtualization */
-    var storedEdit = getEditState(url);
-    if (storedEdit.brightness !== 1 || storedEdit.contrast !== 1) {
-      img.style.filter = 'brightness(' + storedEdit.brightness + ') contrast(' + storedEdit.contrast + ')';
-    }
-    if (storedEdit.rotation !== 0) {
-      rotateWrap.style.transform = 'rotate(' + storedEdit.rotation + 'deg)';
-    }
-
-    img.addEventListener('load', function () {
-      spin.remove();
-      if (img.naturalWidth) dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
-      syncCursor();
-    });
-
-    img.addEventListener('error', function () {
-      spin.remove();
-      box.innerHTML =
-        '<div class="card-err">\u26a0 Could not load<br>' +
-        '<small style="opacity:.4;word-break:break-all;">' + url + '</small></div>';
-    });
-
-    img.src = url;
-    rotateWrap.appendChild(img);
-    box.appendChild(rotateWrap);
-
-    /* Zoom overlays */
-    var badge = document.createElement('div'); badge.className = 'zoom-badge';
-    var hint  = document.createElement('div'); hint.className  = 'zoom-hint';
-    hint.textContent = 'Scroll\u2022zoom    Drag\u2022pan    Dbl-click\u2022reset';
-    box.appendChild(badge);
-    box.appendChild(hint);
-
-    /* ──────────────────────────────────────────────────────
-       ZOOM + DRAG (per-card closures)
-       transform = translate(tx,ty) scale(s)  origin = 0 0
-       Rotation is on the PARENT (rotateWrap), not here.
-       Both are GPU-composited; order is: rotate → translate/scale.
-    ─────────────────────────────────────────────────────── */
+  function attachZoom(card, box, media, badge) {
     var Z_MIN = 1, Z_MAX = 5, Z_FACTOR = 1.13;
     var s = 1, tx = 0, ty = 0;
-    var inside = false, dragging = false;
-    var dragStartX = 0, dragStartY = 0, dragTx0 = 0, dragTy0 = 0;
-    var dragMoved = false, resetTid = null;
+    var inside = false, dragging = false, dragMoved = false;
+    var sx = 0, sy = 0, tx0 = 0, ty0 = 0;
+    var resetTid = null;
 
     function isEditing() { return card.classList.contains('editing'); }
-
     function clamp(ns, ntx, nty) {
       var bw = box.offsetWidth, bh = box.offsetHeight;
       return {
@@ -548,399 +578,710 @@
         ty: Math.min(0, Math.max(bh - bh * ns, nty))
       };
     }
-
-    function applyTf(animate) {
-      img.style.transition = animate ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
-      img.style.transform  =
-        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-        ' scale(' + s.toFixed(4) + ')';
+    function apply(animate) {
+      media.style.transition = animate ? 'transform 0.27s cubic-bezier(0.25,0.46,0.45,0.94)' : 'none';
+      media.style.transform = 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
     }
-
     function syncBadge() {
       badge.textContent = s.toFixed(1) + '\u00d7';
       var z = s > 1.02;
       badge.classList.toggle('visible', z);
       box.classList.toggle('zoomed', z);
     }
-
     function syncCursor() {
-      if (isEditing()) {
-        box.classList.remove('zoom-ready', 'zoomed', 'zoom-drag');
-        return;
-      }
+      if (isEditing()) { box.classList.remove('zoom-ready', 'zoomed', 'zoom-drag'); return; }
       box.classList.toggle('zoom-ready', zoomOn() && s <= 1.02);
       box.classList.toggle('zoomed',     s > 1.02);
       if (!zoomOn() && s <= 1.02) box.classList.remove('zoom-ready', 'zoomed', 'zoom-drag');
     }
-
-    function resetZoom(animate) {
+    function reset(animate) {
       clearTimeout(resetTid);
       s = 1; tx = 0; ty = 0;
-      applyTf(animate !== false); syncBadge(); syncCursor();
+      apply(animate !== false); syncBadge(); syncCursor();
     }
 
-    /* Scroll wheel zoom — blocked during edit mode */
-    box.addEventListener('wheel', function (e) {
+    on(box, 'wheel', function (e) {
       if (!zoomOn() || isEditing()) return;
       var r  = box.getBoundingClientRect();
       var cx = e.clientX - r.left, cy = e.clientY - r.top;
       if (cx < 0 || cy < 0 || cx > r.width || cy > r.height) return;
       e.preventDefault(); e.stopPropagation();
       var factor = e.deltaY < 0 ? Z_FACTOR : 1 / Z_FACTOR;
-      var ns = Math.min(Z_MAX, Math.max(Z_MIN, s * factor));
+      var ns = Util.clamp(s * factor, Z_MIN, Z_MAX);
       if (ns === s) return;
       var c = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
       s = ns; tx = c.tx; ty = c.ty;
-      applyTf(false); syncBadge(); syncCursor();
+      apply(false); syncBadge(); syncCursor();
       clearTimeout(resetTid);
-      if (s <= Z_MIN + 0.02) resetZoom();
+      if (s <= Z_MIN + 0.02) reset();
     }, { passive: false });
 
-    box.addEventListener('mouseenter', function () {
-      inside = true; clearTimeout(resetTid); syncCursor();
-    });
-    box.addEventListener('mouseleave', function () {
+    on(box, 'mouseenter', function () { inside = true; clearTimeout(resetTid); syncCursor(); });
+    on(box, 'mouseleave', function () {
       inside = false;
-      if (!dragging && s > Z_MIN + 0.02) resetTid = setTimeout(resetZoom, 700);
+      if (!dragging && s > Z_MIN + 0.02) resetTid = setTimeout(reset, 700);
       syncCursor();
     });
 
-    /* Drag pan */
-    box.addEventListener('mousedown', function (e) {
-      if (e.button !== 0 || !zoomOn() || s <= 1.02 || gState.spaceHeld || isEditing()) return;
+    on(box, 'mousedown', function (e) {
+      if (e.button !== 0 || !zoomOn() || s <= 1.02 || State.spaceHeld || isEditing()) return;
       e.preventDefault();
       dragging = true; dragMoved = false;
-      dragStartX = e.clientX; dragStartY = e.clientY;
-      dragTx0 = tx; dragTy0 = ty;
+      sx = e.clientX; sy = e.clientY; tx0 = tx; ty0 = ty;
       clearTimeout(resetTid);
       box.classList.add('zoom-drag'); box.classList.remove('zoomed');
     });
-
-    function onDocMove(e) {
+    function onMove(e) {
       if (!dragging) return;
-      var dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
+      var dx = e.clientX - sx, dy = e.clientY - sy;
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) dragMoved = true;
-      var c = clamp(s, dragTx0 + dx, dragTy0 + dy);
+      var c = clamp(s, tx0 + dx, ty0 + dy);
       tx = c.tx; ty = c.ty;
-      img.style.transition = 'none';
-      img.style.transform  =
-        'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)' +
-        ' scale(' + s.toFixed(4) + ')';
+      media.style.transition = 'none';
+      media.style.transform = 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + s.toFixed(4) + ')';
     }
-
-    function onDocUp() {
+    function onUp() {
       if (!dragging) return;
       dragging = false;
       box.classList.remove('zoom-drag'); box.classList.add('zoomed');
       syncCursor();
-      if (!inside && s > Z_MIN + 0.02) resetTid = setTimeout(resetZoom, 700);
+      if (!inside && s > Z_MIN + 0.02) resetTid = setTimeout(reset, 700);
     }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
 
-    document.addEventListener('mousemove', onDocMove);
-    document.addEventListener('mouseup',   onDocUp);
-
-    /* Double-click: toggle 2.5× zoom */
-    box.addEventListener('dblclick', function (e) {
+    on(box, 'dblclick', function (e) {
       if (!zoomOn() || dragMoved || isEditing()) return;
       var r  = box.getBoundingClientRect();
       var cx = e.clientX - r.left, cy = e.clientY - r.top;
-      if (s > 1.05) {
-        resetZoom();
-      } else {
+      if (s > 1.05) { reset(); }
+      else {
         var ns = 2.5;
-        var c  = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
+        var c = clamp(ns, cx - (cx - tx) / s * ns, cy - (cy - ty) / s * ns);
         s = ns; tx = c.tx; ty = c.ty;
-        applyTf(true); syncBadge(); syncCursor();
+        apply(true); syncBadge(); syncCursor();
       }
     });
-
-    zoomEnabledEl.addEventListener('change', function () {
-      if (!zoomOn() && s > 1.02) resetZoom();
-      else syncCursor();
+    on(DOM.zoomEnabled, 'change', function () {
+      if (!zoomOn() && s > 1.02) reset(); else syncCursor();
     });
 
-    /* CLEANUP — called by deactivateSlot when card is virtualized away */
-    box._destroy = function () {
-      document.removeEventListener('mousemove', onDocMove);
-      document.removeEventListener('mouseup',   onDocUp);
+    function destroy() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
       clearTimeout(resetTid);
       dragging = false;
-    };
-
-    syncCursor();
-
-    /* ── URL row ── */
-    var urlRow = document.createElement('div'); urlRow.className = 'card-url-row';
-    var urlTxt = document.createElement('span');
-    urlTxt.className = 'card-url-text';
-    urlTxt.title = url; urlTxt.textContent = url;
-    urlRow.appendChild(urlTxt);
-
-    /* ── Toolbar ── */
-    var toolbar = document.createElement('div'); toolbar.className = 'card-toolbar';
-
-    /* Copy Link */
-    var copyBtn = document.createElement('button');
-    copyBtn.className = 'tcopy'; copyBtn.textContent = 'Copy Link';
-    var cpTid = null;
-    copyBtn.addEventListener('click', function () {
-      var p = navigator.clipboard
-        ? navigator.clipboard.writeText(url)
-        : Promise.resolve().then(function () {
-            var t = document.createElement('textarea');
-            t.value = url; t.style.cssText = 'position:fixed;opacity:0';
-            document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
-          });
-      p.then(function () {
-        copyBtn.textContent = 'Copied!'; copyBtn.classList.add('ok');
-        clearTimeout(cpTid);
-        cpTid = setTimeout(function () { copyBtn.textContent = 'Copy Link'; copyBtn.classList.remove('ok'); }, 1500);
-      });
-    });
-
-    /* Edit — entry point for Edit Mode */
-    var editBtn = document.createElement('button');
-    editBtn.className = 'tedit'; editBtn.textContent = 'Edit';
-    editBtn.addEventListener('click', function () {
-      if (card.classList.contains('editing')) {
-        /* Already editing this card → exit without saving (same as Cancel) */
-        EditMode.exit(false);
-      } else {
-        /* Reset zoom before entering edit mode (cleaner UX) */
-        if (s > 1.02) resetZoom(false);
-        EditMode.enter(card, url);
-      }
-    });
-
-    /* Remove */
-    var removeBtn = document.createElement('button');
-    removeBtn.className = 'tremove'; removeBtn.textContent = 'Remove';
-    removeBtn.addEventListener('click', function () {
-      /* FIX: read live index from DOM instead of closed-over ci */
-      var parentSlot  = card.closest('.vslot');
-      var currentIdx  = parentSlot ? parseInt(parentSlot.dataset.idx, 10) : ci;
-
-      if (box._destroy) box._destroy();
-      if (card.classList.contains('editing')) EditMode.exit(false);
-
-      allUrls.splice(currentIdx, 1);
-      delete editStates[url];
-
-      var removedSlot = slots.splice(currentIdx, 1)[0];
-      activeSet.delete(removedSlot);
-
-      /* Re-sync idx on remaining slots + card-num labels */
-      for (var j = currentIdx; j < slots.length; j++) {
-        slots[j].dataset.idx = String(j);
-        var cn = slots[j].querySelector('.card-num');
-        if (cn) cn.textContent = 'Image ' + (j + 1);
-      }
-
-      refreshCount();
-      card.classList.add('out');
-      setTimeout(function () {
-        if (observer) observer.unobserve(removedSlot);
-        removedSlot.remove();
-      }, 230);
-    });
-
-    toolbar.appendChild(copyBtn);
-    toolbar.appendChild(editBtn);
-    toolbar.appendChild(removeBtn);
-
-    card.appendChild(hdr);
-    card.appendChild(box);
-    card.appendChild(urlRow);
-    card.appendChild(toolbar);
-    return card;
+    }
+    return { destroy: destroy, syncCursor: syncCursor, reset: reset };
   }
 
   /* ════════════════════════════════════════════════════════
-     GLOBAL SPACE-PAN STATE
+     IMAGE CARD
   ════════════════════════════════════════════════════════ */
-  var gState = { spaceHeld: false, hoveredBox: null };
+  var ImageCard = (function () {
+    function build(ci) {
+      var url = State.allUrls[ci];
+      var card = el('div', 'card');
+      var h = Chrome.header(ci + 1, 'image');
+      var stored = EditState.get(url);
 
-  document.addEventListener('mouseover', function (e) {
-    gState.hoveredBox = (e.target.closest ? e.target.closest('.card-img-box') : null) || null;
+      /* Image box */
+      var box = el('div', 'card-img-box');
+      var spin = el('div', 'card-spinner', '<div class="spinner"></div>');
+      box.appendChild(spin);
+
+      var rotateWrap = el('div', 'img-rotate-wrap');
+      var img = el('img', 'card-img');
+      img.alt = 'Image ' + (ci + 1);
+      img.decoding = 'async';
+      img.draggable = false;
+      img.style.transformOrigin = '0 0';
+      img.style.maxHeight = State.currentMaxH;
+
+      /* Restore persisted edit state */
+      if (stored.brightness !== 1 || stored.contrast !== 1) {
+        img.style.filter = 'brightness(' + stored.brightness + ') contrast(' + stored.contrast + ')';
+      }
+      if (stored.rotation !== 0) {
+        rotateWrap.style.transform = 'rotate(' + stored.rotation + 'deg)';
+      }
+
+      on(img, 'load', function () {
+        spin.remove();
+        if (img.naturalWidth) h.dimsEl.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight;
+        zoom.syncCursor();
+      });
+      on(img, 'error', function () {
+        spin.remove();
+        box.innerHTML = '<div class="card-err">\u26a0 Could not load<br>' +
+                        '<small style="opacity:.4;word-break:break-all;">' + url + '</small></div>';
+      });
+      img.src = url;
+      rotateWrap.appendChild(img);
+      box.appendChild(rotateWrap);
+
+      /* Zoom overlays */
+      var badge = el('div', 'zoom-badge');
+      var hint  = el('div', 'zoom-hint');
+      hint.textContent = 'Scroll\u2022zoom    Drag\u2022pan    Dbl-click\u2022reset';
+      box.appendChild(badge); box.appendChild(hint);
+
+      var zoom = attachZoom(card, box, img, badge);
+      box._destroy = zoom.destroy;
+      zoom.syncCursor();
+
+      /* Compose */
+      card.appendChild(h.hdr);
+      card.appendChild(box);
+      card.appendChild(Chrome.urlRow(url));
+      card.appendChild(Chrome.toolbar({
+        url: url,
+        onEdit: function () {
+          if (card.classList.contains('editing')) {
+            EditMode.exit(false);
+          } else {
+            zoom.reset(false);
+            EditMode.enter(card, url);
+          }
+        },
+        onRemove: function () { Chrome.removeCard(card, ci, zoom.destroy); }
+      }));
+      return card;
+    }
+
+    return { build: build };
+  })();
+
+  /* ════════════════════════════════════════════════════════
+     VIDEO CARD
+
+     Layout:
+       .card.card-video-card
+         .card-header
+         .card-img-box.card-video-box           ← media surface
+           .img-rotate-wrap > video.card-video
+           .video-play-overlay                  ← big play button when paused
+           .video-progress-line                 ← thin gold strip, always visible
+           .video-controls                      ← overlay bar, fades in on hover
+             [⏮ ▶ ⏭]  scrubber  time  [speed]  [🔊 vol]  [📷]  [⛶]
+         .card-url-row
+         .card-toolbar (Copy/Edit/Remove)
+  ════════════════════════════════════════════════════════ */
+  var VideoCard = (function () {
+    var PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
+    var FRAME_STEP = 1 / 30;
+
+    function build(ci) {
+      var url = State.allUrls[ci];
+      var stored = VideoState.get(url);
+
+      var card = el('div', 'card card-video-card');
+      var h = Chrome.header(ci + 1, 'video');
+
+      /* Media surface */
+      var box = el('div', 'card-img-box card-video-box');
+      var spin = el('div', 'card-spinner', '<div class="spinner"></div>');
+      box.appendChild(spin);
+
+      var rotateWrap = el('div', 'img-rotate-wrap');
+      var video = makeVideo(url, stored);
+      rotateWrap.appendChild(video);
+      box.appendChild(rotateWrap);
+
+      /* Restore edit state for video */
+      var storedEdit = EditState.get(url);
+      if (storedEdit.brightness !== 1 || storedEdit.contrast !== 1) {
+        video.style.filter = 'brightness(' + storedEdit.brightness + ') contrast(' + storedEdit.contrast + ')';
+      }
+      if (storedEdit.rotation !== 0) {
+        rotateWrap.style.transform = 'rotate(' + storedEdit.rotation + 'deg)';
+      }
+
+      /* Big centred play overlay */
+      var playOverlay = el('div', 'video-play-overlay',
+        '<div class="video-play-icon">\u25B6</div>');
+      box.appendChild(playOverlay);
+
+      /* Zoom badge + hint — same overlay elements as ImageCard */
+      var badge = el('div', 'zoom-badge');
+      var hint  = el('div', 'zoom-hint');
+      hint.textContent = 'Scroll\u2022zoom    Drag\u2022pan    Dbl-click\u2022reset';
+      box.appendChild(badge); box.appendChild(hint);
+
+      /* Attach scroll-wheel zoom identical to image zoom */
+      video.style.transformOrigin = '0 0';
+      var zoom = attachZoom(card, box, video, badge);
+      zoom.syncCursor();
+
+      /* Always-visible thin progress strip pinned to the bottom edge */
+      var progressLine = el('div', 'video-progress-line');
+      var progressFill = el('div', 'video-progress-fill');
+      progressLine.appendChild(progressFill);
+      box.appendChild(progressLine);
+
+      /* Floating overlay controls bar */
+      var controlsApi = buildControls(video, box, url);
+      box.appendChild(controlsApi.bar);
+
+      /* Hover preview: auto-play muted while pointer is over the card */
+      attachHoverPreview(box, video);
+
+      /* Click toggles play/pause (ignore clicks on controls) */
+      on(box, 'click', function (e) {
+        if (e.target.closest('.video-controls') ||
+            e.target.closest('.video-progress-line')) return;
+        if (video._errored) return;
+        if (video.paused) video.play().catch(function () {});
+        else              video.pause();
+      });
+
+      /* Lifecycle: load/error/state-sync */
+      var errored = false;
+      on(video, 'loadedmetadata', function () {
+        spin.remove();
+        if (video.videoWidth) {
+          h.dimsEl.textContent = video.videoWidth + ' \u00d7 ' + video.videoHeight +
+                                 ' \u2022 ' + Util.fmtTime(video.duration);
+        }
+        if (stored.time > 0 && stored.time < video.duration) {
+          try { video.currentTime = stored.time; } catch (_) {}
+        }
+        video.playbackRate = stored.rate || 1;
+        controlsApi.onMetadata();
+      });
+      on(video, 'error', function () {
+        if (errored) return;
+        errored = true; video._errored = true;
+        spin.remove();
+        box.innerHTML = '<div class="card-err">\u26a0 Could not load video<br>' +
+                        '<small style="opacity:.4;word-break:break-all;">' + url + '</small></div>';
+      });
+
+      function persist() {
+        VideoState.set(url, {
+          time  : video.currentTime,
+          muted : video.muted,
+          volume: video.volume,
+          rate  : video.playbackRate
+        });
+      }
+      on(video, 'play',  function () { box.classList.add('playing');    persist(); });
+      on(video, 'pause', function () { box.classList.remove('playing'); persist(); });
+      on(video, 'ended', function () { box.classList.remove('playing'); });
+      on(video, 'timeupdate', function () {
+        controlsApi.onTimeUpdate();
+        if (video.duration > 0) {
+          var pct = (video.currentTime / video.duration) * 100;
+          progressFill.style.width = pct.toFixed(2) + '%';
+        }
+      });
+      on(video, 'ratechange', function () { controlsApi.onRateChange(); persist(); });
+      on(video, 'volumechange', function () { controlsApi.onVolumeChange(); persist(); });
+
+      /* Frame-step helpers exposed for keyboard shortcuts */
+      function frameStep(dir) {
+        if (errored) return;
+        video.pause();
+        video.currentTime = Util.clamp(
+          video.currentTime + dir * FRAME_STEP, 0, video.duration || 0
+        );
+      }
+
+      /* Memory release hook */
+      box._destroy = function () {
+        try { video.pause(); } catch (_) {}
+        persist();
+        zoom.destroy();
+        controlsApi.destroy();
+        video.removeAttribute('src');
+        try { video.load(); } catch (_) {}
+      };
+
+      /* Compose */
+      card.appendChild(h.hdr);
+      card.appendChild(box);
+      card.appendChild(Chrome.urlRow(url));
+      card.appendChild(Chrome.toolbar({
+        url: url,
+        onCopyLink: function () {
+          var t = video.currentTime || 0;
+          if (t <= 0.05) return { text: url, label: 'Copied!' };
+          var sep = url.indexOf('#') >= 0 ? '&' : '#';
+          return { text: url + sep + 't=' + t.toFixed(3),
+                   label: 'Copied @' + Util.fmtTime(t) };
+        },
+        onEdit: function () {
+          if (card.classList.contains('editing')) { EditMode.exit(false); }
+          else { video.pause(); zoom.reset(false); EditMode.enter(card, url); }
+        },
+        onRemove: function () { Chrome.removeCard(card, ci, box._destroy); }
+      }));
+
+      /* Expose for keyboard handler */
+      card._video     = video;
+      card._frameStep = frameStep;
+      return card;
+    }
+
+    /* ── Build the underlying <video> element with sane defaults ── */
+    function makeVideo(url, stored) {
+      var v = document.createElement('video');
+      v.className = 'card-video';
+      v.preload   = 'metadata';
+      v.playsInline = true;
+      v.muted   = stored.muted !== false;
+      v.volume  = stored.volume;
+      v.controls = false;
+      v.crossOrigin = 'anonymous';     /* needed for snapshot toDataURL */
+      v.style.maxHeight = State.currentMaxH;
+      v.src = url;
+      return v;
+    }
+
+    /* ── Hover preview ── */
+    function attachHoverPreview(box, video) {
+      var hover = false;
+      on(box, 'mouseenter', function () {
+        if (video._errored || video.readyState < 1) return;
+        if (video.paused && video.currentTime < (video.duration || 1) - 0.1) {
+          hover = true;
+          var p = video.play();
+          if (p && p.catch) p.catch(function () { hover = false; });
+        }
+      });
+      on(box, 'mouseleave', function () {
+        if (hover && !video.paused) { video.pause(); hover = false; }
+      });
+    }
+
+    /* ── Controls bar (floating overlay) ──
+       Returns { bar, onMetadata, onTimeUpdate, onRateChange, onVolumeChange, destroy } */
+    function buildControls(video, box, url) {
+      var bar = el('div', 'video-controls');
+
+      /* Left cluster: frame step / play / frame step */
+      var prevBtn = mkBtn('vc-btn', '\u23EE', 'Previous frame (,)');
+      var playBtn = mkBtn('vc-btn vc-play', '\u25B6', 'Play / Pause (Space)');
+      var nextBtn = mkBtn('vc-btn', '\u23ED', 'Next frame (.)');
+
+      on(prevBtn, 'click', function (e) { e.stopPropagation();
+        video.pause();
+        video.currentTime = Util.clamp(video.currentTime - FRAME_STEP, 0, video.duration || 0);
+      });
+      on(nextBtn, 'click', function (e) { e.stopPropagation();
+        video.pause();
+        video.currentTime = Util.clamp(video.currentTime + FRAME_STEP, 0, video.duration || 0);
+      });
+      on(playBtn, 'click', function (e) { e.stopPropagation();
+        if (video.paused) video.play().catch(function () {});
+        else              video.pause();
+      });
+      on(video, 'play',  function () { playBtn.textContent = '\u2759\u2759'; });
+      on(video, 'pause', function () { playBtn.textContent = '\u25B6'; });
+
+      /* Scrubber */
+      var seek = document.createElement('input');
+      seek.type = 'range'; seek.className = 'vc-seek';
+      seek.min = '0'; seek.max = '0'; seek.step = 'any'; seek.value = '0';
+      var scrubbing = false;
+      on(seek, 'input',  function ()  {
+        scrubbing = true;
+        timeEl.textContent = Util.fmtTime(parseFloat(seek.value)) +
+                             ' / ' + Util.fmtTime(video.duration || 0);
+      });
+      on(seek, 'change', function ()  {
+        video.currentTime = parseFloat(seek.value);
+        scrubbing = false;
+      });
+      on(seek, 'click',  Util.stop);
+
+      var timeEl = el('span', 'vc-time'); timeEl.textContent = '0:00 / 0:00';
+
+      /* Speed cycler */
+      var speedBtn = mkBtn('vc-btn vc-speed', '1\u00D7', 'Playback speed');
+      on(speedBtn, 'click', function (e) {
+        e.stopPropagation();
+        var idx = PLAYBACK_RATES.indexOf(video.playbackRate);
+        if (idx < 0) idx = PLAYBACK_RATES.indexOf(1);
+        var next = PLAYBACK_RATES[(idx + 1) % PLAYBACK_RATES.length];
+        video.playbackRate = next;
+      });
+
+      /* Mute / volume */
+      var muteBtn = mkBtn('vc-btn', '\uD83D\uDD0A', 'Mute (M)');
+      var volBar  = document.createElement('input');
+      volBar.type = 'range'; volBar.className = 'vc-vol';
+      volBar.min = '0'; volBar.max = '1'; volBar.step = '0.01';
+      volBar.value = String(video.volume);
+      on(muteBtn, 'click', function (e) {
+        e.stopPropagation();
+        video.muted = !video.muted;
+      });
+      on(volBar, 'input', function (e) {
+        e.stopPropagation();
+        video.volume = parseFloat(volBar.value);
+        video.muted = video.volume === 0;
+      });
+      on(volBar, 'click', Util.stop);
+
+      /* Snapshot — capture current frame as a new image entry */
+      var snapBtn = mkBtn('vc-btn vc-snap', '\uD83D\uDCF7', 'Capture frame as image');
+      on(snapBtn, 'click', function (e) {
+        e.stopPropagation();
+        try {
+          var canvas = document.createElement('canvas');
+          canvas.width  = video.videoWidth  || 1280;
+          canvas.height = video.videoHeight || 720;
+          canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+          var dataUrl = canvas.toDataURL('image/png');
+          Virtual.appendUrls([dataUrl]);
+          snapBtn.classList.add('ok');
+          setTimeout(function () { snapBtn.classList.remove('ok'); }, 1200);
+        } catch (err) {
+          Toast.show('Snapshot blocked (cross-origin video).', 'err', 3500);
+        }
+      });
+
+      /* Fullscreen */
+      var fsBtn = mkBtn('vc-btn', '\u26F6', 'Fullscreen');
+      on(fsBtn, 'click', function (e) {
+        e.stopPropagation();
+        if (box.requestFullscreen) box.requestFullscreen();
+        else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+      });
+
+      [prevBtn, playBtn, nextBtn, seek, timeEl, speedBtn, muteBtn, volBar, snapBtn, fsBtn]
+        .forEach(function (n) { bar.appendChild(n); });
+
+      function onMetadata() {
+        seek.max = String(video.duration || 0);
+        onTimeUpdate();
+      }
+      function onTimeUpdate() {
+        if (!scrubbing) seek.value = String(video.currentTime || 0);
+        timeEl.textContent = Util.fmtTime(video.currentTime || 0) +
+                             ' / ' + Util.fmtTime(video.duration || 0);
+      }
+      function onRateChange() {
+        var r = video.playbackRate;
+        speedBtn.textContent = (Number.isInteger(r) ? r : r.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')) + '\u00D7';
+        speedBtn.classList.toggle('alt', r !== 1);
+      }
+      function onVolumeChange() {
+        muteBtn.textContent = (video.muted || video.volume === 0)
+          ? '\uD83D\uDD07' : '\uD83D\uDD0A';
+        volBar.value = String(video.muted ? 0 : video.volume);
+      }
+      function destroy() { /* event listeners live on controls subtree; GC handles them */ }
+
+      onRateChange(); onVolumeChange();
+      return { bar: bar, onMetadata: onMetadata, onTimeUpdate: onTimeUpdate,
+               onRateChange: onRateChange, onVolumeChange: onVolumeChange, destroy: destroy };
+    }
+
+    function mkBtn(cls, label, title) {
+      var b = el('button', cls); b.textContent = label;
+      if (title) b.title = title;
+      return b;
+    }
+
+    return { build: build };
+  })();
+
+  /* ════════════════════════════════════════════════════════
+     HOVER TRACKING (used by keyboard shortcuts)
+  ════════════════════════════════════════════════════════ */
+  on(document, 'mouseover', function (e) {
+    var t = e.target;
+    State.hoveredBox        = (t.closest && t.closest('.card-img-box')) || null;
+    State.hoveredVideoCard  = (t.closest && t.closest('.card-video-card')) || null;
   }, { passive: true });
 
   /* ════════════════════════════════════════════════════════
      KEYBOARD
   ════════════════════════════════════════════════════════ */
-  var scrollVel = 0, scrollDir = 0, scrollRafId = null;
-  var heldKeys  = Object.create(null);
+  (function Keyboard() {
+    var scrollVel = 0, scrollDir = 0, scrollRaf = null;
+    var held = Object.create(null);
 
-  function scrollTick() {
-    if (scrollDir === 0) return;
-    var p = getScrollPreset();
-    scrollVel = Math.min(p.max, scrollVel + p.ramp);
-    window.scrollBy({ top: scrollDir * scrollVel, behavior: 'instant' });
-    scrollRafId = requestAnimationFrame(scrollTick);
-  }
-
-  function startScroll(dir) {
-    if (scrollDir === dir) return;
-    cancelAnimationFrame(scrollRafId);
-    scrollDir = dir; scrollVel = getScrollPreset().base;
-    scrollRafId = requestAnimationFrame(scrollTick);
-  }
-
-  function stopScroll() {
-    cancelAnimationFrame(scrollRafId); scrollDir = 0; scrollVel = 0;
-  }
-
-  document.addEventListener('keydown', function (e) {
-
-    /* ── Space: always block default scroll ── */
-    if (e.code === 'Space') {
-      e.preventDefault();
-      gState.spaceHeld = true;
-      return;
+    function tick() {
+      if (scrollDir === 0) return;
+      var p = getScrollPreset();
+      scrollVel = Math.min(p.max, scrollVel + p.ramp);
+      window.scrollBy({ top: scrollDir * scrollVel, behavior: 'instant' });
+      scrollRaf = requestAnimationFrame(tick);
     }
-
-    /* ── Esc: exit edit mode ── */
-    if (e.key === 'Escape') {
-      if (EditMode.isActive()) EditMode.exit(false);
-      return;
+    function start(dir) {
+      if (scrollDir === dir) return;
+      cancelAnimationFrame(scrollRaf);
+      scrollDir = dir; scrollVel = getScrollPreset().base;
+      scrollRaf = requestAnimationFrame(tick);
     }
+    function stop() { cancelAnimationFrame(scrollRaf); scrollDir = 0; scrollVel = 0; }
 
-    /* ── Ctrl+R: reset edits (only in edit mode) ── */
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
-      if (EditMode.isActive()) { e.preventDefault(); EditMode.reset(); }
-      return;
-    }
+    function handleVideoShortcut(e) {
+      var card = State.hoveredVideoCard;
+      if (!card) return false;
+      var v = card._video;
+      if (!v) return false;
+      var k = e.key;
 
-    /* ── Everything below: ignore if typing ── */
-    if (isTypingTarget()) return;
-
-    var k = e.key;
-
-    /* ── F: fullscreen ── */
-    if (k.toLowerCase() === 'f' && !e.repeat) {
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
-      } else {
-        document.exitFullscreen && document.exitFullscreen();
+      if (k === ',' || (k === 'ArrowLeft'  && (e.shiftKey || e.altKey))) {
+        e.preventDefault(); card._frameStep && card._frameStep(-1); return true;
       }
-      return;
+      if (k === '.' || (k === 'ArrowRight' && (e.shiftKey || e.altKey))) {
+        e.preventDefault(); card._frameStep && card._frameStep( 1); return true;
+      }
+      var lower = k.toLowerCase();
+      if (lower === 'j' && !e.repeat) {
+        e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 5); return true;
+      }
+      if (lower === 'l' && !e.repeat) {
+        e.preventDefault(); v.currentTime = Math.min(v.duration || 0, v.currentTime + 5); return true;
+      }
+      if (lower === 'm' && !e.repeat) {
+        e.preventDefault(); v.muted = !v.muted; return true;
+      }
+      return false;
     }
 
-    /* ── Z: toggle zoom ── */
-    if (k.toLowerCase() === 'z' && !e.repeat) {
-      zoomEnabledEl.checked = !zoomEnabledEl.checked;
-      zoomEnabledEl.dispatchEvent(new Event('change'));
-      return;
-    }
+    on(document, 'keydown', function (e) {
+      /* Space: play/pause hovered video, otherwise block native scroll */
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (!Util.isTyping() && State.hoveredVideoCard && State.hoveredVideoCard._video) {
+          var v = State.hoveredVideoCard._video;
+          if (v.paused) v.play().catch(function () {}); else v.pause();
+          return;
+        }
+        State.spaceHeld = true;
+        return;
+      }
 
-    /* ── +/= : size up ── */
-    if ((k === '+' || k === '=') && !e.repeat) {
-      sizerEl.value = String(Math.min(10, parseInt(sizerEl.value, 10) + 1));
-      applySize(parseInt(sizerEl.value, 10));
-      return;
-    }
+      if (!Util.isTyping() && handleVideoShortcut(e)) return;
 
-    /* ── -: size down ── */
-    if (k === '-' && !e.repeat) {
-      sizerEl.value = String(Math.max(1, parseInt(sizerEl.value, 10) - 1));
-      applySize(parseInt(sizerEl.value, 10));
-      return;
-    }
+      if (e.key === 'Escape') {
+        if (EditMode.isActive()) EditMode.exit(false);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
+        if (EditMode.isActive()) { e.preventDefault(); EditMode.reset(); }
+        return;
+      }
+      if (Util.isTyping()) return;
 
-    /* ── Scroll keys: W/S/Arrows ── */
-    var isUp   = (k === 'w' || k === 'ArrowUp'   || k === 'ArrowLeft');
-    var isDown = (k === 's' || k === 'ArrowDown'  || k === 'ArrowRight');
-
-    if ((isUp || isDown) && !e.repeat) {
-      e.preventDefault();
-      heldKeys[k] = true;
-      startScroll(isDown ? 1 : -1);
-    }
-  });
-
-  document.addEventListener('keyup', function (e) {
-    if (e.code === 'Space') { gState.spaceHeld = false; return; }
-    delete heldKeys[e.key];
-    /* Stop scroll only if ALL scroll keys are released */
-    var anyScroll = heldKeys['w'] || heldKeys['s'] ||
-      heldKeys['ArrowUp']    || heldKeys['ArrowDown'] ||
-      heldKeys['ArrowLeft']  || heldKeys['ArrowRight'];
-    if (!anyScroll) stopScroll();
-  });
-
-  window.addEventListener('blur', function () {
-    stopScroll();
-    heldKeys = Object.create(null);
-    gState.spaceHeld = false;
-  });
+      var k = e.key;
+      if (k.toLowerCase() === 'f' && !e.repeat) {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+        } else {
+          document.exitFullscreen && document.exitFullscreen();
+        }
+        return;
+      }
+      if (k.toLowerCase() === 'z' && !e.repeat) {
+        DOM.zoomEnabled.checked = !DOM.zoomEnabled.checked;
+        DOM.zoomEnabled.dispatchEvent(new Event('change'));
+        return;
+      }
+      if ((k === '+' || k === '=') && !e.repeat) {
+        DOM.sizer.value = String(Math.min(10, parseInt(DOM.sizer.value, 10) + 1));
+        applySize(parseInt(DOM.sizer.value, 10));
+        return;
+      }
+      if (k === '-' && !e.repeat) {
+        DOM.sizer.value = String(Math.max(1, parseInt(DOM.sizer.value, 10) - 1));
+        applySize(parseInt(DOM.sizer.value, 10));
+        return;
+      }
+      var isUp   = (k === 'w' || k === 'ArrowUp'   || k === 'ArrowLeft');
+      var isDown = (k === 's' || k === 'ArrowDown' || k === 'ArrowRight');
+      if ((isUp || isDown) && !e.repeat) {
+        e.preventDefault();
+        held[k] = true;
+        start(isDown ? 1 : -1);
+      }
+    });
+    on(document, 'keyup', function (e) {
+      if (e.code === 'Space') { State.spaceHeld = false; return; }
+      delete held[e.key];
+      var any = held['w'] || held['s'] || held['ArrowUp'] || held['ArrowDown'] ||
+                held['ArrowLeft'] || held['ArrowRight'];
+      if (!any) stop();
+    });
+    on(window, 'blur', function () {
+      stop(); held = Object.create(null); State.spaceHeld = false;
+    });
+  })();
 
   /* ════════════════════════════════════════════════════════
      BULK LOAD
   ════════════════════════════════════════════════════════ */
-  bulkLoadBtn.addEventListener('click', async function () {
-    if (isLoading) return;
-    var urls = parseUrls(bulkArea.value).filter(isUrl);
-    if (!urls.length) { showStatus('No valid URLs found.', 'err'); return; }
+  on(DOM.bulkLoadBtn, 'click', async function () {
+    if (State.isLoading) return;
+    var urls = parseUrls(DOM.bulkArea.value).filter(isValidUrl);
+    if (!urls.length) { Toast.show('No valid URLs found.', 'err'); return; }
 
-    isLoading = true;
-    bulkLoadBtn.disabled = true;
+    State.isLoading = true;
+    DOM.bulkLoadBtn.disabled = true;
 
-    if (!appendMode.checked) clearGallery();
+    if (!DOM.appendMode.checked) Virtual.clear();
 
-    var startIdx = allUrls.length;
-    allUrls = allUrls.concat(urls);
+    var startIdx = State.allUrls.length;
+    State.allUrls = State.allUrls.concat(urls);
 
-    progWrap.classList.remove('hide');
-    progFill.style.width = '0%';
-    progLabel.textContent = 'Building ' + urls.length + ' slots\u2026';
+    DOM.progWrap.classList.remove('hide');
+    DOM.progFill.style.width = '0%';
+    DOM.progLabel.textContent = 'Building ' + urls.length + ' slots\u2026';
 
-    if (observer) observer.disconnect();
+    if (State.observer) State.observer.disconnect();
 
     var CHUNK = 200;
-    var frag  = document.createDocumentFragment();
-
+    var frag = document.createDocumentFragment();
     for (var i = 0; i < urls.length; i++) {
-      var slot = makeSlot(startIdx + i);
-      slots.push(slot);
+      var slot = Virtual.makeSlot(startIdx + i);
+      State.slots.push(slot);
       frag.appendChild(slot);
 
       if ((i + 1) % CHUNK === 0 || i === urls.length - 1) {
-        gallery.appendChild(frag);
+        DOM.gallery.appendChild(frag);
         frag = document.createDocumentFragment();
-        progFill.style.width = Math.round(((i + 1) / urls.length) * 100) + '%';
-        progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed\u2026';
+        DOM.progFill.style.width = Math.round(((i + 1) / urls.length) * 100) + '%';
+        DOM.progLabel.textContent = (i + 1) + ' / ' + urls.length + ' slots placed\u2026';
         refreshCount();
-        /* Yield to browser so UI stays responsive during large loads */
-        await new Promise(function (resolve) {
-          requestAnimationFrame(function () { requestAnimationFrame(resolve); });
-        });
+        await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
       }
     }
+    Virtual.rebuildObserver();
 
-    rebuildObserver();
-    progLabel.textContent = urls.length + ' images ready!';
-    showStatus(urls.length + ' image' + (urls.length !== 1 ? 's' : '') + ' loaded.', 'ok', 4000);
-    setTimeout(function () { progWrap.classList.add('hide'); progFill.style.width = '0%'; }, 2400);
-    bulkArea.value = '';
-    bulkTally.innerHTML = '<b>0</b> URLs';
-    isLoading = false;
-    bulkLoadBtn.disabled = false;
+    var nVid = urls.filter(function (u) { return getMediaType(u) === 'video'; }).length;
+    var nImg = urls.length - nVid;
+    var summary = urls.length + ' item' + (urls.length !== 1 ? 's' : '') + ' loaded' +
+                  (nVid ? ' (' + nImg + ' image' + (nImg !== 1 ? 's' : '') +
+                          ', ' + nVid + ' video' + (nVid !== 1 ? 's' : '') + ')' : '') + '.';
+    DOM.progLabel.textContent = urls.length + ' items ready!';
+    Toast.show(summary, 'ok', 4000);
+    setTimeout(function () { DOM.progWrap.classList.add('hide'); DOM.progFill.style.width = '0%'; }, 2400);
+    DOM.bulkArea.value = '';
+    DOM.bulkTally.innerHTML = '<b>0</b> URLs';
+    State.isLoading = false;
+    DOM.bulkLoadBtn.disabled = false;
   });
 
-  bulkClearBtn.addEventListener('click', function () {
-    bulkArea.value = '';
-    bulkTally.innerHTML = '<b>0</b> URLs';
+  on(DOM.bulkClearBtn, 'click', function () {
+    DOM.bulkArea.value = '';
+    DOM.bulkTally.innerHTML = '<b>0</b> URLs';
   });
 
-  clearAllBtn.addEventListener('click', clearGallery);
+  on(DOM.clearAllBtn, 'click', Virtual.clear);
 
-  window.addEventListener('scroll', function () {
-    btt.classList.toggle('show', window.scrollY > 280);
+  /* ════════════════════════════════════════════════════════
+     BACK TO TOP
+  ════════════════════════════════════════════════════════ */
+  on(window, 'scroll', function () {
+    DOM.btt.classList.toggle('show', window.scrollY > 280);
   }, { passive: true });
-
-  btt.addEventListener('click', function () {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  });
+  on(DOM.btt, 'click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
 
   refreshCount();
-
 })();

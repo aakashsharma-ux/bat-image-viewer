@@ -43,9 +43,15 @@
   <button class="btn-help" id="helpBtn" title="Keyboard Shortcuts">⌨</button>
   <div class="help-tooltip" id="helpTooltip">
     <div class="help-row"><kbd>W</kbd><kbd>S</kbd> or <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> <span>Scroll</span></div>
-    <div class="help-row"><kbd>Z</kbd> <span>Toggle Zoom</span></div>
+    <div class="help-row"><kbd>Z</kbd> <span>Toggle Zoom (images &amp; videos)</span></div>
     <div class="help-row"><kbd>+</kbd><kbd>-</kbd> <span>Image Size</span></div>
     <div class="help-row"><kbd>F</kbd> <span>Fullscreen</span></div>
+    <div class="help-divider">Video (when hovering a video)</div>
+    <div class="help-row"><kbd>Space</kbd> <span>Play / Pause</span></div>
+    <div class="help-row"><kbd>,</kbd> <kbd>.</kbd> <span>Prev / Next Frame</span></div>
+    <div class="help-row"><kbd>J</kbd> <kbd>L</kbd> <span>Seek -5s / +5s</span></div>
+    <div class="help-row"><kbd>M</kbd> <span>Mute</span></div>
+    <div class="help-row"><kbd>Click</kbd> <kbd>1×</kbd> <span>Cycle Playback Speed</span></div>
     <div class="help-divider">In Edit Mode</div>
     <div class="help-row"><kbd>Esc</kbd> <span>Exit Edit</span></div>
     <div class="help-row"><kbd>Ctrl</kbd><kbd>R</kbd> <span>Reset Edits</span></div>
@@ -110,14 +116,14 @@
 <div id="pageBody">
 
   <div id="inputbar">
-    <textarea id="bulkArea" placeholder="Paste image URLs — one per line or comma-separated (up to 1,000). New load replaces previous set."></textarea>
+    <textarea id="bulkArea" placeholder="Paste image or video URLs (mp4, webm, mov) — one per line or comma-separated (up to 1,000). New load replaces previous set."></textarea>
     <div id="inputControls">
       <span class="bulk-tally" id="bulkTally"><b>0</b> URLs</span>
       <label class="append-toggle">
         <input type="checkbox" id="appendMode"><span>Append</span>
       </label>
       <button class="btn btn-ghost" id="bulkClearBtn">Clear</button>
-      <button class="btn btn-gold" id="bulkLoadBtn">Load Images</button>
+      <button class="btn btn-gold" id="bulkLoadBtn">Load Media</button>
     </div>
     <div class="status hide" id="statusMsg"></div>
     <div class="prog-wrap hide" id="progWrap">
@@ -127,7 +133,7 @@
   </div>
 
   <div id="gtoolbar">
-    <span class="gstats"><b id="gCount">0</b> images loaded</span>
+    <span class="gstats"><b id="gCount">0</b> items loaded</span>
     <button class="btn btn-ghost" id="clearAllBtn">Clear All</button>
   </div>
 

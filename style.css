@@ -776,3 +776,206 @@ body.edit-active #btt { right: 298px; }
   .edit-panel { width: 100%; }
   body.edit-active #btt { right: 16px; bottom: 16px; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   VIDEO CARD  (v17 — overlay controls, floating + auto-hide)
+
+   Design goals:
+   ─ Controls overlay the video so they don't push out other
+     chrome (header / url-row / toolbar stay clean).
+   ─ At rest, the control surface is almost invisible — only a
+     thin progress strip is visible at the very bottom edge.
+   ─ On hover, the full bar fades in over a subtle gradient
+     scrim so buttons stay legible without obscuring the frame.
+══════════════════════════════════════════════════════════ */
+.media-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.7px;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  border-radius: 3px;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+
+.card-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  background: #000;
+  object-fit: contain;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.card-video-box {
+  background: #000;
+  cursor: pointer;
+  overflow: hidden;             /* clip the overlay controls */
+}
+
+/* ── Big centre Play affordance (visible when paused) ─────── */
+.video-play-overlay {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+  background: radial-gradient(circle at center, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0) 70%);
+  transition: opacity 0.18s;
+  z-index: 4;
+}
+.card-video-box.playing .video-play-overlay { opacity: 0; }
+.video-play-icon {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  border: 2px solid var(--gold);
+  color: var(--gold);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; padding-left: 6px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+}
+
+/* ── Always-visible thin progress strip pinned to bottom ──── */
+.video-progress-line {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: rgba(255,255,255,0.10);
+  z-index: 5;
+  pointer-events: none;
+  transition: height 0.16s ease, background 0.16s ease;
+}
+.video-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--gold);
+  opacity: 0.85;
+  transition: width 0.08s linear;
+}
+.card-video-box:hover .video-progress-line {
+  height: 3px;
+  background: rgba(255,255,255,0.18);
+}
+
+/* ── Floating overlay control bar (auto-hide) ─────────────── */
+.video-controls {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px 10px;
+  /* Linear scrim so buttons stay legible regardless of frame */
+  background: linear-gradient(to top,
+              rgba(0,0,0,0.78) 0%,
+              rgba(0,0,0,0.55) 55%,
+              rgba(0,0,0,0)   100%);
+  flex-wrap: nowrap;
+  overflow: hidden;
+  z-index: 6;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.card-video-box:hover .video-controls,
+.card-video-box:focus-within .video-controls {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Buttons inside the overlay bar */
+.vc-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 7px;
+  border: 1px solid rgba(255,255,255,0.20);
+  background: rgba(0,0,0,0.40);
+  color: #fff;
+  border-radius: 4px;
+  font-size: 12px; font-family: inherit; font-weight: 700;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.12s, color 0.12s, border-color 0.12s, transform 0.10s;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.vc-btn:hover  { background: rgba(245,197,24,0.22); border-color: var(--gold); color: var(--gold); }
+.vc-btn:active { transform: scale(0.95); }
+.vc-btn.ok    { background: var(--gold); color: #0a0a0f; border-color: var(--gold); }
+.vc-play      { color: var(--gold); border-color: rgba(245,197,24,0.55); }
+.vc-speed     { min-width: 38px; font-size: 11px; letter-spacing: 0.3px; }
+.vc-speed.alt { background: rgba(245,197,24,0.22); color: var(--gold); border-color: var(--gold); }
+
+.vc-time {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  white-space: nowrap;
+  min-width: 86px;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+}
+
+/* Scrubber inside overlay bar */
+.vc-seek {
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 4px;
+  -webkit-appearance: none; appearance: none;
+  background: rgba(255,255,255,0.22);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.vc-seek::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 13px; height: 13px;
+  background: var(--gold);
+  border-radius: 50%; cursor: pointer; border: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+.vc-seek::-moz-range-thumb {
+  width: 13px; height: 13px;
+  background: var(--gold);
+  border-radius: 50%; cursor: pointer; border: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+}
+
+/* Volume slider */
+.vc-vol {
+  flex: 0 0 56px;
+  height: 4px;
+  -webkit-appearance: none; appearance: none;
+  background: rgba(255,255,255,0.22);
+  border-radius: 2px; cursor: pointer;
+}
+.vc-vol::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px;
+  background: #fff;
+  border-radius: 50%; cursor: pointer; border: none;
+}
+.vc-vol::-moz-range-thumb {
+  width: 10px; height: 10px;
+  background: #fff;
+  border-radius: 50%; cursor: pointer; border: none;
+}
+
+/* Edit mode: dim and disable the overlay (so it doesn't fight Edit Mode) */
+.card.editing .video-controls,
+.card.editing .video-progress-line { opacity: 0; pointer-events: none; }
+
+/* Force-show controls while hovering helps touch devices reveal the bar */
+@media (hover: none) {
+  .video-controls { opacity: 1; transform: translateY(0); pointer-events: auto; }
+}
+
+@media (max-width: 600px) {
+  .video-controls { gap: 4px; padding: 6px 6px 8px; flex-wrap: wrap; }
+  .vc-time { flex: 1 1 100%; order: 5; min-width: 0; }
+  .vc-vol  { flex: 0 0 44px; }
+}
