@@ -213,6 +213,32 @@ body::before {
 .ctrl-toggle input:checked + .tog-track .tog-thumb { transform: translateX(15px); }
 .tog-theme { background: rgba(60,80,140,0.25); }
 
+/* Topbar action buttons (Pause All / Mute All) */
+.btn-bar {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border-btn);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.14s, border-color 0.14s, background 0.14s;
+}
+.btn-bar:hover {
+  color: var(--text-primary);
+  border-color: var(--gold);
+  background: rgba(245,197,24,0.08);
+}
+.btn-bar.active {
+  color: var(--gold);
+  border-color: var(--gold);
+  background: rgba(245,197,24,0.14);
+}
+#globalSpeed { width: 110px; }
+
 /* Keyboard help button + tooltip */
 .btn-help {
   flex-shrink: 0; position: relative;
@@ -506,7 +532,8 @@ body.edit-active .card:not(.editing) {
   border: 1px solid rgba(128,128,0,0.20);
 }
 .tcopy:hover { background: rgba(128,128,0,0.16); }
-.tcopy.ok { background: rgba(46,204,113,0.08); color: var(--green); border-color: rgba(46,204,113,0.22); }
+ .tcopy.ok { background: rgba(46,204,113,0.08); color: var(--green); border-color: rgba(46,204,113,0.22); }
+ .tcopy.err { background: rgba(231,76,60,0.10); color: #e74c3c; border-color: rgba(231,76,60,0.28); }
 
 /* ── Edit button — blue/indigo, clearly distinct ── */
 .tedit {
@@ -838,7 +865,7 @@ body.edit-active #btt { right: 298px; }
   box-shadow: 0 4px 18px rgba(0,0,0,0.45);
 }
 
-/* ── Always-visible thin progress strip pinned to bottom ──── */
+/* ── Thin progress strip — overlays video, auto-hides with controls ── */
 .video-progress-line {
   position: absolute;
   left: 0; right: 0; bottom: 0;
@@ -846,7 +873,8 @@ body.edit-active #btt { right: 298px; }
   background: rgba(255,255,255,0.10);
   z-index: 5;
   pointer-events: none;
-  transition: height 0.16s ease, background 0.16s ease;
+  opacity: 0.10;                 /* matches faint control-bar at rest */
+  transition: opacity 0.14s ease, height 0.16s ease, background 0.16s ease;
 }
 .video-progress-fill {
   height: 100%;
@@ -855,18 +883,19 @@ body.edit-active #btt { right: 298px; }
   opacity: 0.85;
   transition: width 0.08s linear;
 }
-.card-video-box:hover .video-progress-line {
+.card-video-box.cursor-active .video-progress-line {
+  opacity: 1;
   height: 3px;
   background: rgba(255,255,255,0.18);
 }
 
-/* ── Floating overlay control bar (auto-hide) ─────────────── */
+/* ── Floating overlay control bar — faintly visible at idle (10%),
+       fully visible while the cursor is moving or hovering the bar. ── */
 .video-controls {
   position: absolute;
   left: 0; right: 0; bottom: 0;
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px 10px;
-  /* Linear scrim so buttons stay legible regardless of frame */
   background: linear-gradient(to top,
               rgba(0,0,0,0.78) 0%,
               rgba(0,0,0,0.55) 55%,
@@ -874,16 +903,13 @@ body.edit-active #btt { right: 298px; }
   flex-wrap: nowrap;
   overflow: hidden;
   z-index: 6;
-  opacity: 0;
-  transform: translateY(8px);
-  pointer-events: none;
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-.card-video-box:hover .video-controls,
-.card-video-box:focus-within .video-controls {
-  opacity: 1;
+  opacity: 0.10;                 /* faint resting visibility */
   transform: translateY(0);
-  pointer-events: auto;
+  pointer-events: auto;          /* always interactive so hovering keeps it open */
+  transition: opacity 0.14s ease;
+}
+.card-video-box.cursor-active .video-controls {
+  opacity: 1;
 }
 
 /* Buttons inside the overlay bar */
@@ -965,13 +991,38 @@ body.edit-active #btt { right: 298px; }
   border-radius: 50%; cursor: pointer; border: none;
 }
 
+/* Per-video playback-speed slider (lives next to the speed badge). */
+.vc-speedwrap {
+  display: inline-flex; align-items: center; gap: 6px;
+  flex: 0 0 auto;
+}
+.vc-speedbar {
+  flex: 0 0 60px;
+  height: 4px;
+  -webkit-appearance: none; appearance: none;
+  background: rgba(255,255,255,0.22);
+  border-radius: 2px; cursor: pointer;
+}
+.vc-speedbar::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px;
+  background: var(--gold);
+  border-radius: 50%; cursor: pointer; border: none;
+}
+.vc-speedbar::-moz-range-thumb {
+  width: 10px; height: 10px;
+  background: var(--gold);
+  border-radius: 50%; cursor: pointer; border: none;
+}
+
 /* Edit mode: dim and disable the overlay (so it doesn't fight Edit Mode) */
 .card.editing .video-controls,
 .card.editing .video-progress-line { opacity: 0; pointer-events: none; }
 
-/* Force-show controls while hovering helps touch devices reveal the bar */
+/* Touch devices: a tap toggles cursor-active (handled in JS) so users
+   can still reveal the controls without a pointer. */
 @media (hover: none) {
-  .video-controls { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  .card-video-box.cursor-active .video-controls { opacity: 1; pointer-events: auto; transform: translateY(0); }
 }
 
 @media (max-width: 600px) {

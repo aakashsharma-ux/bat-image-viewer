@@ -52,15 +52,32 @@
       var ms = Math.floor((t - Math.floor(t)) * 1000);
       return base + '.' + pad(ms, 3);
     }
-    function copyToClipboard(text) {
-      if (navigator.clipboard) return navigator.clipboard.writeText(text);
-      return new Promise(function (resolve) {
-        var ta = document.createElement('textarea');
-        ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); } catch (_) {}
-        ta.remove(); resolve();
+    function fallbackCopy(text) {
+      return new Promise(function (resolve, reject) {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+          document.body.appendChild(ta);
+          ta.focus(); ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          var ok = document.execCommand('copy');
+          ta.remove();
+          ok ? resolve() : reject(new Error('execCommand copy failed'));
+        } catch (e) { reject(e); }
       });
+    }
+    function copyToClipboard(text) {
+      /* Try modern Clipboard API first, but always fall back to the
+         textarea+execCommand path when it rejects (insecure context,
+         permission denied, iframe sandbox, older browsers, etc.). */
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text).catch(function () {
+          return fallbackCopy(text);
+        });
+      }
+      return fallbackCopy(text);
     }
     return {
       $: $, el: el, on: on, stop: stop, isTyping: isTyping,
@@ -98,7 +115,18 @@
     themeToggle  : $('themeToggle'),
     themeLabel   : $('themeLabel'),
     helpBtn      : $('helpBtn'),
-    helpTooltip  : $('helpTooltip')
+    helpTooltip  : $('helpTooltip'),
+    pauseAllBtn  : $('pauseAllBtn'),
+    muteAllBtn   : $('muteAllBtn'),
+    globalSpeed  : $('globalSpeed'),
+    globalSpeedBadge: $('globalSpeedBadge')
+  };
+
+  /* Global video controls — applied to every video on load and on change.
+     muteAll defaults to true so every newly-loaded video is muted. */
+  var GlobalVid = {
+    muteAll: true,
+    rate   : 1
   };
 
   /* ════════════════════════════════════════════════════════
@@ -396,18 +424,32 @@
 
       var copyBtn = makeBtn('tcopy', 'Copy Link');
       var copyTid = null;
-      on(copyBtn, 'click', function () {
+      on(copyBtn, 'click', function (ev) {
+        ev && ev.stopPropagation && ev.stopPropagation();
         var link = opts.onCopyLink ? opts.onCopyLink() : opts.url;
         var label = (typeof link === 'object' && link.label) ? link.label : 'Copied!';
         var text  = (typeof link === 'object') ? link.text : link;
         Util.copyToClipboard(text).then(function () {
           copyBtn.textContent = label;
+          copyBtn.classList.remove('err');
           copyBtn.classList.add('ok');
           clearTimeout(copyTid);
           copyTid = setTimeout(function () {
             copyBtn.textContent = 'Copy Link';
             copyBtn.classList.remove('ok');
           }, 1700);
+        }).catch(function () {
+          /* Last-resort: surface the URL so the user can copy manually,
+             and indicate failure rather than silently doing nothing. */
+          copyBtn.textContent = 'Copy failed';
+          copyBtn.classList.add('err');
+          Toast.show('Could not copy automatically — link shown below.', 'err', 2400);
+          try { window.prompt('Copy this link:', text); } catch (_) {}
+          clearTimeout(copyTid);
+          copyTid = setTimeout(function () {
+            copyBtn.textContent = 'Copy Link';
+            copyBtn.classList.remove('err');
+          }, 2200);
         });
       });
 
@@ -504,13 +546,15 @@
     }
     function rebuildObserver() {
       if (State.observer) State.observer.disconnect();
-      /* 300% rootMargin: preload three screens worth of cards */
+      /* Keep only ~1 screen of cards hot above/below the viewport so we
+         scale to 1,000+ media items without exhausting memory or sockets.
+         Inactive slots fully unload their <video src> in deactivate(). */
       State.observer = new IntersectionObserver(function (entries) {
         entries.forEach(function (e) {
           if (e.isIntersecting) activate(e.target);
           else                  deactivate(e.target);
         });
-      }, { root: null, rootMargin: '300% 0px 300% 0px', threshold: 0 });
+      }, { root: null, rootMargin: '100% 0px 100% 0px', threshold: 0 });
       State.slots.forEach(function (s) { State.observer.observe(s); });
     }
     function clear() {
@@ -823,8 +867,10 @@
       var controlsApi = buildControls(video, box, url);
       box.appendChild(controlsApi.bar);
 
-      /* Hover preview: auto-play muted while pointer is over the card */
-      attachHoverPreview(box, video);
+      /* Hover preview disabled — videos remain paused until the user clicks.
+         Controls bar reveals only while the cursor is moving over the video,
+         and hides immediately when motion stops. */
+      attachCursorReveal(box);
 
       /* Click toggles play/pause (ignore clicks on controls) */
       on(box, 'click', function (e) {
@@ -904,11 +950,10 @@
       card.appendChild(Chrome.toolbar({
         url: url,
         onCopyLink: function () {
-          var t = video.currentTime || 0;
-          if (t <= 0.05) return { text: url, label: 'Copied!' };
-          var sep = url.indexOf('#') >= 0 ? '&' : '#';
-          return { text: url + sep + 't=' + t.toFixed(3),
-                   label: 'Copied @' + Util.fmtTime(t) };
+          /* Always copy the EXACT original URL the user provided — no
+             timestamp fragment, no thumbnail-seed (#t=0.1) we added
+             internally. This is the link the user expects to paste. */
+          return { text: url, label: 'Copied!' };
         },
         onEdit: function () {
           if (card.classList.contains('editing')) { EditMode.exit(false); }
@@ -923,19 +968,97 @@
       return card;
     }
 
-    /* ── Build the underlying <video> element with sane defaults ── */
+    /* ── Build the underlying <video> element with sane defaults ──
+       preload="auto" → the browser fetches enough data to begin
+       playback immediately when the user hits play. Combined with
+       virtualization (only ~3 screens of cards are mounted at any
+       time), this is safe for 500+ video sets while still feeling
+       instant. Videos always start PAUSED and MUTED. */
     function makeVideo(url, stored) {
       var v = document.createElement('video');
       v.className = 'card-video';
-      v.preload   = 'metadata';
+      v.preload   = 'auto';
       v.playsInline = true;
-      v.muted   = stored.muted !== false;
+      /* Mute-by-default. Global "Mute All" overrides any per-video state
+         on load; the user can still un-mute an individual video after. */
+      v.muted   = GlobalVid.muteAll ? true : (stored.muted !== false);
       v.volume  = stored.volume;
       v.controls = false;
       v.crossOrigin = 'anonymous';     /* needed for snapshot toDataURL */
       v.style.maxHeight = State.currentMaxH;
-      v.src = url;
+      /* Render the first frame as a built-in thumbnail before playback. */
+      v.setAttribute('preload', 'auto');
+      try {
+        var sep = url.indexOf('#') >= 0 ? '&' : '#';
+        v.src = url + sep + 't=0.1';
+      } catch (_) { v.src = url; }
+
+      /* Cap concurrent playbacks: when this video starts, pause every
+         other one in the gallery.  Keeps decoder + network usage flat
+         even when thousands of cards are mounted. */
+      v.addEventListener('play', function () {
+        var all = document.querySelectorAll('video.card-video');
+        for (var i = 0; i < all.length; i++) {
+          if (all[i] !== v && !all[i].paused) {
+            try { all[i].pause(); } catch (_) {}
+          }
+        }
+      });
+      /* Apply global playback rate as soon as metadata is ready. */
+      v.addEventListener('loadedmetadata', function () {
+        try { v.playbackRate = GlobalVid.rate; } catch (_) {}
+      });
       return v;
+    }
+
+    /* ── Cursor-reveal: show controls while pointer is moving, and KEEP
+         them visible whenever the pointer is hovering the control bar
+         itself (so users can comfortably click play / scrub / etc.). ── */
+    function attachCursorReveal(box) {
+      var IDLE_MS = 90;          /* hides almost immediately when cursor stops */
+      var idleTimer = 0;
+      var overBar  = false;      /* pointer is currently inside .video-controls */
+
+      function show() {
+        box.classList.add('cursor-active');
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; }
+        /* Don't start the hide-timer while the cursor is parked on
+           the control bar — the bar must stay fully visible. */
+        if (!overBar) idleTimer = setTimeout(hide, IDLE_MS);
+      }
+      function hide() {
+        idleTimer = 0;
+        if (overBar) return;     /* safety: never hide while on the bar */
+        box.classList.remove('cursor-active');
+      }
+
+      on(box, 'mousemove',  show);
+      on(box, 'mouseenter', show);
+      on(box, 'mouseleave', function () {
+        overBar = false;
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; }
+        hide();
+      });
+      on(box, 'mousedown',   show);
+      on(box, 'pointerdown', show);
+      on(box, 'focusin',     show);
+      on(box, 'touchstart',  show);
+
+      /* Track the pointer relative to the control bar.  We attach
+         listeners after a microtask so the bar element exists. */
+      Promise.resolve().then(function () {
+        var bar = box.querySelector('.video-controls');
+        if (!bar) return;
+        on(bar, 'mouseenter', function () {
+          overBar = true;
+          if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; }
+          box.classList.add('cursor-active');
+        });
+        on(bar, 'mouseleave', function () {
+          overBar = false;
+          show();                /* restart idle timer */
+        });
+      });
     }
 
     /* ── Hover preview ── */
@@ -997,15 +1120,27 @@
 
       var timeEl = el('span', 'vc-time'); timeEl.textContent = '0:00 / 0:00';
 
-      /* Speed cycler */
-      var speedBtn = mkBtn('vc-btn vc-speed', '1\u00D7', 'Playback speed');
-      on(speedBtn, 'click', function (e) {
+      /* Speed slider — drag to change playback rate. Double-click the
+         badge to snap back to 1×. Mirrors the global Speed All slider. */
+      var speedWrap = el('span', 'vc-speedwrap');
+      var speedBar  = document.createElement('input');
+      speedBar.type = 'range'; speedBar.className = 'vc-speedbar';
+      speedBar.min = '0.25'; speedBar.max = '4'; speedBar.step = '0.05';
+      speedBar.value = String(video.playbackRate || 1);
+      speedBar.title = 'Playback speed';
+      var speedBtn = mkBtn('vc-btn vc-speed', '1\u00D7', 'Double-click to reset speed');
+      on(speedBar, 'input', function (e) {
         e.stopPropagation();
-        var idx = PLAYBACK_RATES.indexOf(video.playbackRate);
-        if (idx < 0) idx = PLAYBACK_RATES.indexOf(1);
-        var next = PLAYBACK_RATES[(idx + 1) % PLAYBACK_RATES.length];
-        video.playbackRate = next;
+        video.playbackRate = parseFloat(speedBar.value);
       });
+      on(speedBar, 'click', Util.stop);
+      on(speedBtn, 'dblclick', function (e) {
+        e.stopPropagation();
+        video.playbackRate = 1;
+        speedBar.value = '1';
+      });
+      speedWrap.appendChild(speedBar);
+      speedWrap.appendChild(speedBtn);
 
       /* Mute / volume */
       var muteBtn = mkBtn('vc-btn', '\uD83D\uDD0A', 'Mute (M)');
@@ -1050,7 +1185,7 @@
         else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
       });
 
-      [prevBtn, playBtn, nextBtn, seek, timeEl, speedBtn, muteBtn, volBar, snapBtn, fsBtn]
+      [prevBtn, playBtn, nextBtn, seek, timeEl, speedWrap, muteBtn, volBar, snapBtn, fsBtn]
         .forEach(function (n) { bar.appendChild(n); });
 
       function onMetadata() {
@@ -1066,6 +1201,7 @@
         var r = video.playbackRate;
         speedBtn.textContent = (Number.isInteger(r) ? r : r.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')) + '\u00D7';
         speedBtn.classList.toggle('alt', r !== 1);
+        if (parseFloat(speedBar.value) !== r) speedBar.value = String(r);
       }
       function onVolumeChange() {
         muteBtn.textContent = (video.muted || video.volume === 0)
@@ -1099,7 +1235,7 @@
 
   /* ════════════════════════════════════════════════════════
      KEYBOARD
-  ════════════════════════════════════════════════════════ */
+  ═══════════════════════════════════════��════════════════ */
   (function Keyboard() {
     var scrollVel = 0, scrollDir = 0, scrollRaf = null;
     var held = Object.create(null);
@@ -1171,7 +1307,9 @@
       if (Util.isTyping()) return;
 
       var k = e.key;
-      if (k.toLowerCase() === 'f' && !e.repeat) {
+      /* Ignore F when Ctrl/Cmd is held so the browser's native Find
+         (Ctrl+F / Cmd+F) works normally instead of toggling fullscreen. */
+      if (k.toLowerCase() === 'f' && !e.repeat && !e.ctrlKey && !e.metaKey) {
         if (!document.fullscreenElement) {
           document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
         } else {
@@ -1274,6 +1412,66 @@
   });
 
   on(DOM.clearAllBtn, 'click', Virtual.clear);
+
+  /* ════════════════════════════════════════════════════════
+     GLOBAL VIDEO CONTROLS  (Pause All / Mute All / Speed All)
+  ════════════════════════════════════════════════════════ */
+  (function GlobalControls() {
+    function allVideos() {
+      return document.querySelectorAll('video.card-video');
+    }
+
+    /* PAUSE ALL */
+    on(DOM.pauseAllBtn, 'click', function () {
+      var vids = allVideos();
+      var paused = 0;
+      vids.forEach(function (v) {
+        if (!v.paused) { try { v.pause(); paused++; } catch (_) {} }
+      });
+      Toast.show(paused
+        ? 'Paused ' + paused + ' video' + (paused !== 1 ? 's' : '') + '.'
+        : 'No videos were playing.', 'ok', 1800);
+    });
+
+    /* MUTE ALL — toggles. When ON, every current AND future video is muted. */
+    function syncMuteBtn() {
+      DOM.muteAllBtn.classList.toggle('active', GlobalVid.muteAll);
+      DOM.muteAllBtn.innerHTML = GlobalVid.muteAll
+        ? '\uD83D\uDD07 Unmute All'
+        : '\uD83D\uDD0A Mute All';
+    }
+    on(DOM.muteAllBtn, 'click', function () {
+      GlobalVid.muteAll = !GlobalVid.muteAll;
+      allVideos().forEach(function (v) {
+        try { v.muted = GlobalVid.muteAll; } catch (_) {}
+      });
+      syncMuteBtn();
+    });
+    syncMuteBtn();
+
+    /* SPEED ALL — slider sets a global playback rate for every video. */
+    function fmtRate(r) {
+      if (r === 1) return '1.00\u00D7';
+      return r.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + '\u00D7';
+    }
+    function applyGlobalRate(r) {
+      GlobalVid.rate = r;
+      DOM.globalSpeedBadge.textContent = fmtRate(r);
+      DOM.globalSpeedBadge.parentElement.classList.toggle('alt', r !== 1);
+      allVideos().forEach(function (v) {
+        try { v.playbackRate = r; } catch (_) {}
+      });
+    }
+    on(DOM.globalSpeed, 'input', function () {
+      applyGlobalRate(parseFloat(DOM.globalSpeed.value));
+    });
+    /* Double-click the badge to snap back to 1×. */
+    on(DOM.globalSpeedBadge, 'dblclick', function () {
+      DOM.globalSpeed.value = '1';
+      applyGlobalRate(1);
+    });
+    applyGlobalRate(parseFloat(DOM.globalSpeed.value));
+  })();
 
   /* ════════════════════════════════════════════════════════
      BACK TO TOP

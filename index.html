@@ -34,6 +34,15 @@
     <span class="ctrl-label">Zoom <small>(Z)</small></span>
   </label>
 
+  <div class="ctrl-group" id="globalSpeedGroup" title="Apply playback speed to all videos">
+    <span class="ctrl-label">Speed All</span>
+    <input type="range" class="ctrl-slider" id="globalSpeed" min="0.25" max="4" value="1" step="0.05">
+    <span class="ctrl-badge" id="globalSpeedBadge">1.00&times;</span>
+  </div>
+
+  <button class="btn-bar" id="pauseAllBtn" title="Pause every video">&#10074;&#10074; Pause All</button>
+  <button class="btn-bar" id="muteAllBtn" title="Mute every video">&#128263; Mute All</button>
+
   <label class="ctrl-toggle theme-toggle" id="themeToggleLabel" title="Toggle theme">
     <input type="checkbox" id="themeToggle">
     <span class="tog-track tog-theme"><span class="tog-thumb"></span></span>
